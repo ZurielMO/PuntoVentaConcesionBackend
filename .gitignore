@@ -8,6 +8,9 @@ serviceAccountKey.json
 *.serviceAccountKey.json
 acreditaciones.serviceAccountKey.json
 leon.serviceAccountKey.json
+*-firebase-adminsdk-*.json
+**/.env.local
+**/.secret.local
 *.log
 .DS_Store
 
