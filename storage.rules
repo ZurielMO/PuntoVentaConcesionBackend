@@ -1,0 +1,10 @@
+rules_version = '2';
+
+// Denegación por defecto. Los uploads pasan por Cloud Functions (Admin SDK).
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

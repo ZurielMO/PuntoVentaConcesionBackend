@@ -1,0 +1,21 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdminStaff() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true ||
+        request.auth.token.rol in ['ADMIN', 'EMPLEADO', 'SUPER_ADMIN']
+      );
+    }
+
+    // Denegación por defecto: todo el acceso pasa por Cloud Functions (Admin SDK).
+    // Define reglas específicas por colección a medida que implementes el dominio.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

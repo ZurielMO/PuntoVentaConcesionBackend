@@ -1,0 +1,29 @@
+{
+  "name": "puntoventa-back",
+  "version": "1.0.0",
+  "description": "Backend API (cascarón base) para PuntoVenta - Node.js + TypeScript + Firebase Cloud Functions",
+  "main": "functions/lib/index.js",
+  "scripts": {
+    "dev": "npm run dev --prefix functions",
+    "build": "npm run build --prefix functions",
+    "start": "npm run shell --prefix functions",
+    "deploy": "npm run deploy --prefix functions",
+    "clean": "npm run clean --prefix functions"
+  },
+  "keywords": [
+    "puntoventa",
+    "pos",
+    "nodejs",
+    "typescript",
+    "firebase",
+    "firestore",
+    "express"
+  ],
+  "author": "PuntoVenta",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
