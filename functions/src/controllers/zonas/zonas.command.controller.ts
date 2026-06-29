@@ -16,3 +16,6 @@ export const deleteZona = asyncHandler(async (req: Request, res: Response) => {
   await zonaService.softDeleteZona(req.params.id);
   res.status(204).send();
 });
+
+
+//prueba commit de deploy
