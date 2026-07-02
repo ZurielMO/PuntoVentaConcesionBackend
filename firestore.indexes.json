@@ -1,4 +1,23 @@
 {
-  "indexes": [],
+  "indexes": [
+    {
+      "collectionGroup": "asignaciones_cajas_jornada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "jornadaId", "order": "ASCENDING" },
+        { "fieldPath": "sucursalId", "order": "ASCENDING" },
+        { "fieldPath": "activo", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "asignaciones_cajas_jornada",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "jornadaId", "order": "ASCENDING" },
+        { "fieldPath": "vendedorUid", "order": "ASCENDING" },
+        { "fieldPath": "activo", "order": "ASCENDING" }
+      ]
+    }
+  ],
   "fieldOverrides": []
 }
