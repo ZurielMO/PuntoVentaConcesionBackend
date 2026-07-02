@@ -4,13 +4,15 @@ import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import { buildOriginId } from "../utils/origin-id.util";
+import { normalizeRecordImageUrls } from "./storage.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.CONCESIONES);
 
-const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
-  id: doc.id,
-  ...doc.data(),
-});
+const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } =>
+  normalizeRecordImageUrls({
+    id: doc.id,
+    ...doc.data(),
+  });
 
 export const listConcessions = async () => {
   const snap = await col().where("activo", "==", true).get();
@@ -80,8 +82,54 @@ export const softDeleteConcession = async (id: string) => {
 };
 
 // ---------------------------------------------------------------------------
-// asignarPuntosConsecion (typo intencional, confirmado en producción)
+// assignUserToConcession: Actualizar usuario admin de una concesión
+// y sincronizar el campo concesionId en el documento del usuario
 // ---------------------------------------------------------------------------
+
+export const assignUserToConcession = async (
+  concessionId: string,
+  userId: string,
+) => {
+  const concRef = col().doc(concessionId);
+  const concDoc = await concRef.get();
+  if (!concDoc.exists) {
+    throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
+  }
+
+  // Verificar que el usuario existe y es ADMIN
+  const userCol = firestorePos.collection(COLLECTIONS.USERS);
+  const userRef = userCol.doc(userId);
+  const userDoc = await userRef.get();
+  if (!userDoc.exists) {
+    throw new ApiError(404, "Usuario no encontrado", true, "NOT_FOUND");
+  }
+
+  const userData = userDoc.data();
+  const rol = typeof userData?.rol === "string" ? userData.rol.toUpperCase() : undefined;
+  if (rol !== "ADMIN") {
+    throw new ApiError(
+      400,
+      "Solo se pueden asignar usuarios con rol ADMIN a una concesión",
+      true,
+      "INVALID_USER_ROLE",
+    );
+  }
+
+  // Actualizar la concesión
+  await concRef.update({
+    idUser: userId,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  // Actualizar el usuario con la concesión
+  await userRef.update({
+    concesionId: concessionId,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  const updated = await concRef.get();
+  return toData(updated);
+};
 
 export interface AssignConcessionPointsParams {
   userId: string;
@@ -162,4 +210,36 @@ export const assignConcessionPoints = async (
     idOrigen,
     externalResponse,
   };
+};
+
+export const appendConcessionImages = async (
+  id: string,
+  newUrls: string[],
+) => {
+  const concession = await getConcessionById(id);
+  const imagenes = [...((concession.imagenes as string[] | undefined) ?? []), ...newUrls];
+  const ref = col().doc(id);
+  await ref.update({
+    imagenes,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const updated = await ref.get();
+  return toData(updated);
+};
+
+export const removeConcessionImageAtIndex = async (id: string, index: number) => {
+  const concession = await getConcessionById(id);
+  const imagenes = [...((concession.imagenes as string[] | undefined) ?? [])];
+  if (index < 0 || index >= imagenes.length) {
+    throw new ApiError(404, "Imagen no encontrada", true, "NOT_FOUND");
+  }
+  const removedUrl = imagenes[index];
+  imagenes.splice(index, 1);
+  const ref = col().doc(id);
+  await ref.update({
+    imagenes,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const updated = await ref.get();
+  return { updated: toData(updated), removedUrl };
 };

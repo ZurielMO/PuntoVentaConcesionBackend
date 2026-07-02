@@ -2,13 +2,15 @@ import { FieldValue } from "firebase-admin/firestore";
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
+import { normalizeRecordImageUrls } from "./storage.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.PRODUCTS);
 
-const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
-  id: doc.id,
-  ...doc.data(),
-});
+const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } =>
+  normalizeRecordImageUrls({
+    id: doc.id,
+    ...doc.data(),
+  });
 
 export const listProductsByConcession = async (concesionId: string) => {
   const snap = await col()
@@ -18,8 +20,12 @@ export const listProductsByConcession = async (concesionId: string) => {
   return snap.docs.map(toData);
 };
 
-export const listProducts = async () => {
-  const snap = await col().where("activo", "==", true).get();
+export const listProducts = async (concesionId?: string) => {
+  let query: FirebaseFirestore.Query = col().where("activo", "==", true);
+  if (concesionId) {
+    query = query.where("concesion_id", "==", concesionId);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 
@@ -113,4 +119,25 @@ export const softDeleteProduct = async (id: string) => {
     throw new ApiError(404, "Producto no encontrado", true, "NOT_FOUND");
   }
   await ref.update({ activo: false, updatedAt: FieldValue.serverTimestamp() });
+};
+
+export const appendProductImages = async (
+  id: string,
+  newUrls: string[],
+) => {
+  const product = await getProductById(id);
+  const imagenes = [...((product.imagenes as string[] | undefined) ?? []), ...newUrls];
+  return updateProduct(id, { imagenes });
+};
+
+export const removeProductImageAtIndex = async (id: string, index: number) => {
+  const product = await getProductById(id);
+  const imagenes = [...((product.imagenes as string[] | undefined) ?? [])];
+  if (index < 0 || index >= imagenes.length) {
+    throw new ApiError(404, "Imagen no encontrada", true, "NOT_FOUND");
+  }
+  const removedUrl = imagenes[index];
+  imagenes.splice(index, 1);
+  const updated = await updateProduct(id, { imagenes });
+  return { updated, removedUrl };
 };

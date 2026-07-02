@@ -2,7 +2,11 @@ import { Router } from "express";
 import * as q from "../controllers/sucursales/sucursales.query.controller";
 import * as c from "../controllers/sucursales/sucursales.command.controller";
 import { validateBody } from "../middleware/validation.middleware";
-import { authMiddleware, requireAdmin } from "../utils/middlewares";
+import { authMiddleware } from "../utils/middlewares";
+import {
+  requireSucursalReadAccess,
+  requireSucursalWriteAccess,
+} from "../utils/roles.middlewares";
 import {
   createSucursalSchema,
   updateSucursalSchema,
@@ -12,21 +16,21 @@ const router = Router();
 
 router.use(authMiddleware);
 
-router.get("/", q.getSucursales);
+router.get("/", q.getSucursales); // filtrado por concesión en el service
 router.post(
   "/",
-  requireAdmin,
+  requireSucursalWriteAccess,
   validateBody(createSucursalSchema),
   c.createSucursal,
 );
-router.get("/:id", q.getSucursalById);
-router.get("/:id/cajas", q.getCajas);
+router.get("/:id", requireSucursalReadAccess, q.getSucursalById);
+router.get("/:id/cajas", requireSucursalReadAccess, q.getCajas);
 router.put(
   "/:id",
-  requireAdmin,
+  requireSucursalWriteAccess,
   validateBody(updateSucursalSchema),
   c.updateSucursal,
 );
-router.delete("/:id", requireAdmin, c.deleteSucursal);
+router.delete("/:id", requireSucursalWriteAccess, c.deleteSucursal);
 
 export default router;

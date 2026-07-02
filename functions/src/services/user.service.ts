@@ -2,19 +2,93 @@ import { FieldValue } from "firebase-admin/firestore";
 import { authAdmin, firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
+import { UserRole } from "../models";
 
 const col = () => firestorePos.collection(COLLECTIONS.USERS);
+const concessionsCol = () => firestorePos.collection(COLLECTIONS.CONCESIONES);
+const sucursalesCol = () => firestorePos.collection(COLLECTIONS.SUCURSALES);
 
 const toData = (doc: FirebaseFirestore.DocumentSnapshot) => {
   const data = doc.data() ?? {};
-  // Nunca exponemos password.
   const { password, ...rest } = data as Record<string, unknown>;
   void password;
   return { id: doc.id, ...rest };
 };
 
-export const listUsers = async () => {
-  const snap = await col().get();
+const normalizeRole = (rol: string): string =>
+  rol === "EMPLEADO" ? UserRole.VENDEDOR : rol.toUpperCase();
+
+const assertConcessionExists = async (concesionId: string) => {
+  const doc = await concessionsCol().doc(concesionId).get();
+  if (!doc.exists || doc.data()?.activo === false) {
+    throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
+  }
+};
+
+const assertSucursalBelongsToConcession = async (
+  sucursalId: string,
+  concesionId: string,
+) => {
+  const doc = await sucursalesCol().doc(sucursalId).get();
+  if (!doc.exists || doc.data()?.activo === false) {
+    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
+  }
+  if (doc.data()?.concesion_id !== concesionId) {
+    throw new ApiError(
+      400,
+      "La sucursal no pertenece a la concesión indicada",
+      true,
+      "INVALID_SUCURSAL",
+    );
+  }
+};
+
+const validateUserBusinessRules = async (data: {
+  rol: string;
+  concesionId?: string | null;
+  sucursalId?: string | null;
+}) => {
+  const rol = normalizeRole(data.rol);
+
+  if (rol === UserRole.SUPERADMIN) {
+    throw new ApiError(
+      403,
+      "No se pueden crear usuarios SUPERADMIN desde la API",
+      true,
+      "FORBIDDEN",
+    );
+  }
+
+  if (!data.concesionId) {
+    throw new ApiError(
+      400,
+      "ADMIN y VENDEDOR requieren concesionId",
+      true,
+      "MISSING_CONCESSION",
+    );
+  }
+
+  await assertConcessionExists(data.concesionId);
+
+  if (rol === UserRole.VENDEDOR) {
+    if (!data.sucursalId) {
+      throw new ApiError(
+        400,
+        "Los VENDEDORES requieren sucursalId",
+        true,
+        "MISSING_SUCURSAL",
+      );
+    }
+    await assertSucursalBelongsToConcession(data.sucursalId, data.concesionId);
+  }
+};
+
+export const listUsers = async (concesionId?: string) => {
+  let query: FirebaseFirestore.Query = col();
+  if (concesionId) {
+    query = query.where("concesionId", "==", concesionId);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 
@@ -33,7 +107,16 @@ export const createUser = async (data: {
   password: string;
   rol: string;
   activo?: boolean;
+  concesionId?: string | null;
+  sucursalId?: string | null;
 }) => {
+  const normalizedRole = normalizeRole(data.rol);
+  await validateUserBusinessRules({
+    rol: normalizedRole,
+    concesionId: data.concesionId,
+    sucursalId: data.sucursalId,
+  });
+
   let authUser;
   try {
     authUser = await authAdmin.createUser({
@@ -45,28 +128,38 @@ export const createUser = async (data: {
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code === "auth/email-already-exists") {
-      throw new ApiError(
-        409,
-        "Ya existe un usuario con ese email",
-        true,
-        "EMAIL_ALREADY_EXISTS",
-      );
+      throw new ApiError(409, "Ya existe un usuario con ese email", true, "EMAIL_ALREADY_EXISTS");
     }
     throw error;
   }
 
-  const docData = {
+  const docData: Record<string, unknown> = {
     uid: authUser.uid,
     nombre: data.nombre,
     fecha_nacimiento: data.fecha_nacimiento,
     email: data.email.toLowerCase(),
-    rol: data.rol,
+    rol: normalizedRole,
     activo: data.activo ?? true,
+    concesionId: data.concesionId ?? null,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
 
-  await col().doc(authUser.uid).set(docData);
+  if (normalizedRole === UserRole.VENDEDOR && data.sucursalId) {
+    docData.sucursalId = data.sucursalId;
+  }
+
+  try {
+    await col().doc(authUser.uid).set(docData);
+  } catch (error) {
+    try {
+      await authAdmin.deleteUser(authUser.uid);
+    } catch {
+      // best effort rollback
+    }
+    throw error;
+  }
+
   const doc = await col().doc(authUser.uid).get();
   return toData(doc);
 };
@@ -80,6 +173,8 @@ export const updateUser = async (
     password: string;
     rol: string;
     activo: boolean;
+    concesionId: string | null;
+    sucursalId: string | null;
   }>,
 ) => {
   const ref = col().doc(id);
@@ -88,9 +183,25 @@ export const updateUser = async (
     throw new ApiError(404, "Usuario no encontrado", true, "NOT_FOUND");
   }
 
-  const uid = (doc.data()?.uid as string) || id;
+  const existing = doc.data() ?? {};
+  const mergedRol = data.rol ? normalizeRole(data.rol) : (existing.rol as string);
+  const mergedConcesionId =
+    data.concesionId !== undefined ? data.concesionId : (existing.concesionId as string | null);
+  const mergedSucursalId =
+    data.sucursalId !== undefined ? data.sucursalId : (existing.sucursalId as string | null);
 
-  // Sincronizar con Firebase Auth cuando aplique.
+  if (mergedRol === UserRole.SUPERADMIN) {
+    throw new ApiError(403, "No se puede asignar rol SUPERADMIN", true, "FORBIDDEN");
+  }
+
+  await validateUserBusinessRules({
+    rol: mergedRol,
+    concesionId: mergedConcesionId,
+    sucursalId: mergedSucursalId,
+  });
+
+  const uid = (existing.uid as string) || id;
+
   const authUpdate: Record<string, unknown> = {};
   if (data.email) authUpdate.email = data.email;
   if (data.password) authUpdate.password = data.password;
@@ -117,6 +228,9 @@ export const updateUser = async (
   void password;
   if (firestoreData.email) {
     firestoreData.email = firestoreData.email.toLowerCase();
+  }
+  if (firestoreData.rol) {
+    firestoreData.rol = normalizeRole(firestoreData.rol);
   }
 
   await ref.update({

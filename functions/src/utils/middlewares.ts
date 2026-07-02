@@ -55,13 +55,25 @@ const findPosProfile = async (
   // 1) docId == uid
   const byDocId = await users.doc(uid).get();
   if (byDocId.exists) {
-    return { id: byDocId.id, ...byDocId.data() };
+    const data = byDocId.data();
+    return {
+      id: byDocId.id,
+      ...data,
+      concesionId: data?.concesionId || data?.idConcesion || null,
+      sucursalId: data?.sucursalId || data?.idSucursal || null,
+    };
   }
 
   // 2) campo uid == uid
   const byUid = await users.where("uid", "==", uid).limit(1).get();
   if (!byUid.empty) {
-    return { id: byUid.docs[0].id, ...byUid.docs[0].data() };
+    const data = byUid.docs[0].data();
+    return {
+      id: byUid.docs[0].id,
+      ...data,
+      concesionId: data?.concesionId || data?.idConcesion || null,
+      sucursalId: data?.sucursalId || data?.idSucursal || null,
+    };
   }
 
   // 3) email legacy
@@ -71,7 +83,13 @@ const findPosProfile = async (
       .limit(1)
       .get();
     if (!byEmail.empty) {
-      return { id: byEmail.docs[0].id, ...byEmail.docs[0].data() };
+      const data = byEmail.docs[0].data();
+      return {
+        id: byEmail.docs[0].id,
+        ...data,
+        concesionId: data?.concesionId || data?.idConcesion || null,
+        sucursalId: data?.sucursalId || data?.idSucursal || null,
+      };
     }
   }
 
@@ -119,79 +137,28 @@ export const authMiddleware = asyncHandler(
 
     const profile = await findPosProfile(decoded.uid, decoded.email);
 
+    const normalizedRole =
+      typeof (profile?.rol || decoded.rol) === "string"
+        ? String(profile?.rol || decoded.rol).toUpperCase() === "EMPLEADO"
+          ? "VENDEDOR"
+          : String(profile?.rol || decoded.rol).toUpperCase()
+        : "VENDEDOR";
+
     req.user = {
       uid: decoded.uid,
       email: decoded.email,
       admin: decoded.admin === true,
       isAdmin: decoded.isAdmin === true,
+      rol: normalizedRole,
+      concesionId: profile?.concesionId || profile?.idConcesion || null,
+      sucursalId: profile?.sucursalId || profile?.idSucursal || null,
+      activo: profile?.activo !== false,
       ...(profile ?? {}),
     } as Express.AuthenticatedUser;
 
     next();
   },
 );
-
-const ADMIN_ROLES = ["SUPERADMIN", "ADMIN", "EMPLEADO"];
-
-/** Requiere rol administrativo (o claim admin/isAdmin). Bloquea si activo === false. */
-export const requireAdmin = (
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-): void => {
-  const user = req.user;
-  if (!user) {
-    throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
-  }
-
-  if (user.activo === false) {
-    throw new ApiError(403, "La cuenta está desactivada", true, "USER_INACTIVE");
-  }
-
-  const rol = typeof user.rol === "string" ? user.rol.toUpperCase() : undefined;
-  const isAdmin =
-    user.admin === true ||
-    user.isAdmin === true ||
-    (rol ? ADMIN_ROLES.includes(rol) : false);
-
-  if (!isAdmin) {
-    throw new ApiError(
-      403,
-      "No tienes permisos administrativos",
-      true,
-      "FORBIDDEN",
-    );
-  }
-
-  next();
-};
-
-/** Requiere rol SUPERADMIN (crear usuarios POS). */
-export const requireSuperAdmin = (
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-): void => {
-  const user = req.user;
-  if (!user) {
-    throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
-  }
-  if (user.activo === false) {
-    throw new ApiError(403, "La cuenta está desactivada", true, "USER_INACTIVE");
-  }
-
-  const rol = typeof user.rol === "string" ? user.rol.toUpperCase() : undefined;
-  if (rol !== "SUPERADMIN" && user.admin !== true) {
-    throw new ApiError(
-      403,
-      "Se requiere rol SUPERADMIN",
-      true,
-      "FORBIDDEN",
-    );
-  }
-
-  next();
-};
 
 /** Autenticación opcional: si hay token válido lo decodifica; si no, continúa. */
 export const optionalAuthMiddleware = asyncHandler(

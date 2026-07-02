@@ -1,4 +1,5 @@
 import { getRealtimeDbAppOficial2 } from "../config/firebase.appoficial2";
+import { ApiError } from "../utils/api-error";
 
 const JORNADA_ACTIVA_PATH = "jornada_activa";
 
@@ -38,4 +39,39 @@ export const getJornadaActiva = async (): Promise<
 
   // Fallback: si ninguna marca activo=true, devolver el nodo completo.
   return Object.keys(activas).length > 0 ? activas : value;
+};
+
+const normalizeFechaJornada = (fecha: string): string => {
+  const raw = fecha.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const dmy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+  return raw;
+};
+
+/** Primera jornada con activo=true; usa jornada y fecha para abrir inventario. */
+export const resolveJornadaPrimaria = async (): Promise<{
+  jornadaNumero: number;
+  fecha: string;
+  detalle: JornadaActivaValue;
+}> => {
+  const activas = await getJornadaActiva();
+  const entries = Object.values(activas).filter(Boolean);
+  const pick =
+    entries.find((j) => j.activo === true) ?? entries[0];
+
+  if (!pick || pick.jornada == null || !pick.fecha) {
+    throw new ApiError(
+      400,
+      "No hay jornada activa configurada",
+      true,
+      "JORNADA_NO_ACTIVA",
+    );
+  }
+
+  return {
+    jornadaNumero: Number(pick.jornada),
+    fecha: normalizeFechaJornada(String(pick.fecha)),
+    detalle: pick,
+  };
 };

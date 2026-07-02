@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
 import * as inventarioService from "../../services/inventario.service";
+import { getUserConcessionId } from "../../utils/roles.middlewares";
 
 export const createInventario = asyncHandler(
   async (req: Request, res: Response) => {
@@ -11,6 +12,26 @@ export const createInventario = asyncHandler(
       sucursalId,
     );
     res.status(201).json({ success: true, data, message: "Inventario creado" });
+  },
+);
+
+export const openInventarioJornadaActiva = asyncHandler(
+  async (req: Request, res: Response) => {
+    const concesionId = getUserConcessionId(req.user);
+    if (!concesionId) {
+      res.status(403).json({
+        success: false,
+        message: "Usuario sin concesión asignada",
+      });
+      return;
+    }
+    const { inventario, jornada } =
+      await inventarioService.getOrCreateInventarioJornadaActiva(concesionId);
+    res.status(201).json({
+      success: true,
+      data: { inventario, jornada },
+      message: "Inventario de jornada activa listo",
+    });
   },
 );
 
@@ -27,6 +48,7 @@ export const upsertInventarioProducto = asyncHandler(
       req.params.id,
       req.params.productoId,
       req.body,
+      { idUser: req.user?.uid },
     );
     res.status(200).json({ success: true, data });
   },

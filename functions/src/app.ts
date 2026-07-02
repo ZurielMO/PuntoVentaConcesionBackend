@@ -8,14 +8,7 @@ import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./utils/error-handler";
 import { getSwaggerSpec } from "./config/swagger.config";
 import { requestContextMiddleware } from "./middleware/request-context.middleware";
-import {
-  authMiddleware,
-  requireAdmin,
-  blockDebugInProduction,
-} from "./utils/middlewares";
-import { validateBody } from "./middleware/validation.middleware";
-import { assignConcessionPointsSchema } from "./middleware/validators/concession.validator";
-import { assignConcessionPoints } from "./controllers/concessions/concessions.command.controller";
+import { blockDebugInProduction } from "./utils/middlewares";
 import { getAllowedCorsOriginsWithStore } from "./config/cors.config";
 
 const buildCorsOptions = (): CorsOptions => {
@@ -96,16 +89,6 @@ const swaggerSetup = swaggerUi.setup(swaggerSpec, {
 });
 app.use("/docs", swaggerUi.serve, swaggerSetup);
 app.use("/api-docs", swaggerUi.serve, swaggerSetup);
-
-// Shortcut explícito para la ruta con typo intencional, ANTES del router,
-// para evitar que "/concessions/:id" capture la ruta.
-app.post(
-  "/concessions/asignarPuntosConsecion",
-  authMiddleware,
-  requireAdmin,
-  validateBody(assignConcessionPointsSchema),
-  assignConcessionPoints,
-);
 
 app.use("/", routes);
 

@@ -5,7 +5,11 @@ import * as sucursalService from "../../services/sucursal.service";
 
 export const createSucursal = asyncHandler(
   async (req: Request, res: Response) => {
-    const concesionId = req.query.concesion_id as string | undefined;
+    const concesionId =
+      (req.query.concesion_id as string | undefined) ||
+      (req.body?.concesionId as string | undefined) ||
+      (req.body?.concesion_id as string | undefined) ||
+      (req.user?.concesionId as string | undefined);
     const zonaId = req.query.zona_id as string | undefined;
     if (!concesionId || !zonaId) {
       throw new ApiError(

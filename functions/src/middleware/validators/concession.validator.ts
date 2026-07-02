@@ -30,6 +30,11 @@ export const assignConcessionPointsSchema = z
 
 export type CreateConcessionInput = z.infer<typeof createConcessionSchema>;
 export type ReplaceConcessionInput = z.infer<typeof replaceConcessionSchema>;
-export type AssignConcessionPointsInput = z.infer<
-  typeof assignConcessionPointsSchema
->;
+export const assignUserToConcessionSchema = z
+  .object({
+    userId: z.string().min(1, "userId es obligatorio"),
+  })
+  .strict();
+
+export type AssignUserToConcessionInput = z.infer<typeof assignUserToConcessionSchema>;
+

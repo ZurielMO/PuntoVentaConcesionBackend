@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
 import * as concessionService from "../../services/concession.service";
+import * as storageService from "../../services/storage.service";
+import { ApiError } from "../../utils/api-error";
 
 export const createConcession = asyncHandler(
   async (req: Request, res: Response) => {
@@ -43,10 +45,70 @@ const normalizeAssignConcessionPointsBody = (body: {
   descripcion: body.descripcion,
 });
 
+export const assignUserToConcession = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await concessionService.assignUserToConcession(
+      req.params.id,
+      req.body.userId,
+    );
+    res.status(200).json({
+      success: true,
+      data,
+      message: "Usuario asignado a concesión correctamente",
+    });
+  },
+);
+
 export const assignConcessionPoints = asyncHandler(
   async (req: Request, res: Response) => {
     const payload = normalizeAssignConcessionPointsBody(req.body);
     const result = await concessionService.assignConcessionPoints(payload);
     res.status(200).json({ success: true, data: result });
+  },
+);
+
+export const uploadConcessionImages = asyncHandler(
+  async (req: Request, res: Response) => {
+    const concession = await concessionService.getConcessionById(req.params.id);
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    if (files.length === 0) {
+      throw new ApiError(400, "No se enviaron imágenes", true, "NO_FILES");
+    }
+
+    const existingCount = ((concession.imagenes as string[] | undefined) ?? []).length;
+    const urls = await storageService.uploadConcessionImages(
+      req.params.id,
+      files,
+      existingCount,
+    );
+    const updated = await concessionService.appendConcessionImages(req.params.id, urls);
+
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: "Imágenes subidas",
+    });
+  },
+);
+
+export const deleteConcessionImage = asyncHandler(
+  async (req: Request, res: Response) => {
+    const index = Number(req.params.index);
+    if (Number.isNaN(index)) {
+      throw new ApiError(400, "Índice de imagen inválido", true, "BAD_REQUEST");
+    }
+
+    const { updated, removedUrl } = await concessionService.removeConcessionImageAtIndex(
+      req.params.id,
+      index,
+    );
+    await storageService.deleteStorageFileByUrl(removedUrl);
+
+    res.status(200).json({
+      success: true,
+      data: updated,
+      message: "Imagen eliminada",
+    });
   },
 );

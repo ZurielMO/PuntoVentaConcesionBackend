@@ -8,6 +8,7 @@ import {
   createConcessionSchema,
   replaceConcessionSchema,
   assignConcessionPointsSchema,
+  assignUserToConcessionSchema,
 } from "../middleware/validators/concession.validator";
 import {
   createProductSchema,
@@ -65,7 +66,7 @@ const swaggerDefinition = {
     title: "POS Concesiones Estadio - API",
     version: "1.0.0",
     description:
-      "API REST para sistema de punto de venta (POS) de concesiones de estadio.",
+      "API REST para POS de concesiones de estadio. RBAC: SUPERADMIN gestiona concesiones, zonas y usuarios; ADMIN opera su concesión (sucursales, productos, inventario, ventas, cortes); VENDEDOR solo operación de caja (lectura productos/inventario, ventas y cortes propios).",
   },
   servers: [
     { url: "/api", description: "Servidor actual" },
@@ -103,6 +104,7 @@ const swaggerDefinition = {
       CreateConcession: z2j(createConcessionSchema),
       ReplaceConcession: z2j(replaceConcessionSchema),
       AssignConcessionPoints: z2j(assignConcessionPointsSchema),
+      AssignUserToConcession: z2j(assignUserToConcessionSchema),
       CreateProduct: z2j(createProductSchema),
       UpdateProduct: z2j(updateProductSchema),
       CreateSucursal: z2j(createSucursalSchema),
@@ -176,15 +178,103 @@ const swaggerDefinition = {
       put: { tags: ["Concessions"], summary: "Reemplazar", security: bearer, parameters: [idParam], requestBody: json("ReplaceConcession"), responses: { 200: ok("OK") } },
       delete: { tags: ["Concessions"], summary: "Eliminar (soft)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminada") } },
     },
+    "/concessions/{id}/assign-user": {
+      put: { tags: ["Concessions"], summary: "Asignar usuario ADMIN a concesión (SUPERADMIN)", security: bearer, parameters: [idParam], requestBody: json("AssignUserToConcession"), responses: { 200: ok("Usuario asignado") } },
+    },
+    "/concessions/{id}/images": {
+      post: {
+        tags: ["Concessions"],
+        summary: "Subir imágenes de concesión",
+        security: bearer,
+        parameters: [idParam],
+        requestBody: {
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  images: { type: "array", items: { type: "string", format: "binary" } },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: ok("Imágenes subidas") },
+      },
+    },
+    "/concessions/{id}/images/{index}": {
+      delete: {
+        tags: ["Concessions"],
+        summary: "Eliminar imagen de concesión por índice",
+        security: bearer,
+        parameters: [idParam, { in: "path", name: "index", required: true, schema: { type: "integer" } }],
+        responses: { 200: ok("Eliminada") },
+      },
+    },
     "/concessions/{concesionId}/products": {
       get: { tags: ["Products"], summary: "Productos de concesión", security: bearer, parameters: [{ in: "path", name: "concesionId", required: true, schema: { type: "string" } }], responses: { 200: ok("Lista") } },
       post: { tags: ["Products"], summary: "Crear producto", security: bearer, parameters: [{ in: "path", name: "concesionId", required: true, schema: { type: "string" } }], requestBody: json("CreateProduct"), responses: { 201: ok("Creado") } },
     },
-    "/products": { get: { tags: ["Products"], summary: "Listar productos activos", security: bearer, responses: { 200: ok("Lista") } } },
+    "/products": {
+      get: { tags: ["Products"], summary: "Listar productos activos", security: bearer, responses: { 200: ok("Lista") } },
+      post: {
+        tags: ["Products"],
+        summary: "Crear producto (JSON o multipart con images)",
+        security: bearer,
+        requestBody: {
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/CreateProduct" } },
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  nombre: { type: "string" },
+                  unidad_medida: { type: "string" },
+                  precio: { type: "number" },
+                  activo: { type: "boolean" },
+                  images: { type: "array", items: { type: "string", format: "binary" } },
+                },
+              },
+            },
+          },
+        },
+        responses: { 201: ok("Creado") },
+      },
+    },
     "/products/{id}": {
       get: { tags: ["Products"], summary: "Obtener", security: bearer, parameters: [idParam], responses: { 200: ok("OK") } },
       put: { tags: ["Products"], summary: "Actualizar", security: bearer, parameters: [idParam], requestBody: json("UpdateProduct"), responses: { 200: ok("OK") } },
       delete: { tags: ["Products"], summary: "Eliminar (soft)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminado") } },
+    },
+    "/products/{id}/images": {
+      post: {
+        tags: ["Products"],
+        summary: "Subir imágenes de producto",
+        security: bearer,
+        parameters: [idParam],
+        requestBody: {
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  images: { type: "array", items: { type: "string", format: "binary" } },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: ok("Imágenes subidas") },
+      },
+    },
+    "/products/{id}/images/{index}": {
+      delete: {
+        tags: ["Products"],
+        summary: "Eliminar imagen por índice",
+        security: bearer,
+        parameters: [idParam, { in: "path", name: "index", required: true, schema: { type: "integer" } }],
+        responses: { 200: ok("Eliminada") },
+      },
     },
     "/sucursales": {
       get: { tags: ["Sucursales"], summary: "Listar", security: bearer, responses: { 200: ok("Lista") } },
@@ -207,13 +297,18 @@ const swaggerDefinition = {
     },
     "/jornadas/activa": { get: { tags: ["Jornadas"], summary: "Jornada activa", security: bearer, responses: { 200: ok("OK"), 503: ok("Sin credenciales RTDB") } } },
     "/inventarios": { get: { tags: ["Inventarios"], summary: "Listar", security: bearer, parameters: [{ in: "query", name: "includeProductos", schema: { type: "boolean" } }], responses: { 200: ok("Lista") } } },
+    "/inventarios/jornada-activa": {
+      get: { tags: ["Inventarios"], summary: "Inventario jornada activa (lectura)", security: bearer, parameters: [{ in: "query", name: "includeProductos", schema: { type: "boolean" } }], responses: { 200: ok("OK") } },
+      post: { tags: ["Inventarios"], summary: "Abrir inventario jornada activa", security: bearer, responses: { 201: ok("Creado") } },
+    },
     "/inventarios/jornadas/{jornadaNumero}/fechas/{fechaJornada}/sucursales/{sucursalId}": {
-      post: { tags: ["Inventarios"], summary: "Crear inventario", security: bearer, parameters: [{ in: "path", name: "jornadaNumero", required: true, schema: { type: "string" } }, { in: "path", name: "fechaJornada", required: true, schema: { type: "string" } }, { in: "path", name: "sucursalId", required: true, schema: { type: "string" } }], responses: { 201: ok("Creado") } },
+      post: { tags: ["Inventarios"], summary: "Crear inventario (legacy por sucursal)", security: bearer, parameters: [{ in: "path", name: "jornadaNumero", required: true, schema: { type: "string" } }, { in: "path", name: "fechaJornada", required: true, schema: { type: "string" } }, { in: "path", name: "sucursalId", required: true, schema: { type: "string" } }], responses: { 201: ok("Creado") } },
     },
     "/inventarios/{id}": {
       get: { tags: ["Inventarios"], summary: "Obtener", security: bearer, parameters: [idParam, { in: "query", name: "includeProductos", schema: { type: "boolean" } }], responses: { 200: ok("OK") } },
       delete: { tags: ["Inventarios"], summary: "Eliminar (soft)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminado") } },
     },
+    "/inventarios/{id}/movimientos": { get: { tags: ["Inventarios"], summary: "Movimientos de stock", security: bearer, parameters: [idParam, { in: "query", name: "limit", schema: { type: "integer" } }], responses: { 200: ok("Lista") } } },
     "/inventarios/{id}/productos": { get: { tags: ["Inventarios"], summary: "Productos del inventario", security: bearer, parameters: [idParam], responses: { 200: ok("Lista") } } },
     "/inventarios/{id}/productos/{productoId}": {
       get: { tags: ["Inventarios"], summary: "Obtener producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], responses: { 200: ok("OK") } },

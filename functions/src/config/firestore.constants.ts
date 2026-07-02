@@ -22,4 +22,5 @@ export const SUBCOLLECTIONS = {
   CAJAS: "cajas",
   PRODUCTOS: "productos",
   DETALLE: "detalle",
+  MOVIMIENTOS: "movimientos",
 } as const;

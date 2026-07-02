@@ -2,7 +2,8 @@ import { Router } from "express";
 import * as q from "../controllers/zonas/zonas.query.controller";
 import * as c from "../controllers/zonas/zonas.command.controller";
 import { validateBody } from "../middleware/validation.middleware";
-import { authMiddleware, requireAdmin } from "../utils/middlewares";
+import { authMiddleware } from "../utils/middlewares";
+import { requireAuthenticated, requireSuperAdmin } from "../utils/roles.middlewares";
 import {
   createZonaSchema,
   updateZonaSchema,
@@ -12,10 +13,10 @@ const router = Router();
 
 router.use(authMiddleware);
 
-router.get("/", q.getZonas);
-router.post("/", requireAdmin, validateBody(createZonaSchema), c.createZona);
-router.get("/:id", q.getZonaById);
-router.put("/:id", requireAdmin, validateBody(updateZonaSchema), c.updateZona);
-router.delete("/:id", requireAdmin, c.deleteZona);
+router.get("/", requireAuthenticated, q.getZonas);
+router.post("/", requireSuperAdmin, validateBody(createZonaSchema), c.createZona);
+router.get("/:id", requireAuthenticated, q.getZonaById);
+router.put("/:id", requireSuperAdmin, validateBody(updateZonaSchema), c.updateZona);
+router.delete("/:id", requireSuperAdmin, c.deleteZona);
 
 export default router;

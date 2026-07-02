@@ -7,6 +7,8 @@ export const createProductSchema = z
     precio: z.number().nonnegative(),
     imagenes: z.array(z.string().url()).optional().default([]),
     activo: z.boolean().optional().default(true),
+    concesionId: z.string().min(1).optional(),
+    concesion_id: z.string().min(1).optional(),
   })
   .strict();
 

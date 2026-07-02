@@ -10,8 +10,24 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   ...doc.data(),
 });
 
-export const listCortes = async () => {
-  const snap = await col().get();
+export interface CorteListFilters {
+  concesionId?: string;
+  sucursalId?: string;
+  idUser?: string;
+}
+
+export const listCortes = async (filters: CorteListFilters = {}) => {
+  let query: FirebaseFirestore.Query = col();
+  if (filters.concesionId) {
+    query = query.where("concesionId", "==", filters.concesionId);
+  }
+  if (filters.sucursalId) {
+    query = query.where("sucursalId", "==", filters.sucursalId);
+  }
+  if (filters.idUser) {
+    query = query.where("idUser", "==", filters.idUser);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 
@@ -24,8 +40,12 @@ export const getCorteById = async (id: string) => {
 };
 
 export const createCorte = async (
-  ventaId: string | undefined,
-  idUser: string | undefined,
+  context: {
+    concesionId: string;
+    sucursalId?: string | null;
+    idUser: string;
+    ventaId?: string | null;
+  },
   data: {
     fecha: string;
     comentarios?: string;
@@ -35,8 +55,10 @@ export const createCorte = async (
   },
 ) => {
   const payload = {
-    ventaId: ventaId ?? null,
-    idUser: idUser ?? null,
+    ventaId: context.ventaId ?? null,
+    idUser: context.idUser,
+    concesionId: context.concesionId,
+    sucursalId: context.sucursalId ?? null,
     fecha: data.fecha,
     comentarios: data.comentarios ?? null,
     estatus: data.estatus,

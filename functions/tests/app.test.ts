@@ -9,10 +9,10 @@ describe("App / rutas base", () => {
     expect(res.body.service).toContain("POS Concesiones Estadio");
   });
 
-  it("rutas protegidas sin credenciales responden 503 claro", async () => {
+  it("rutas protegidas sin token responden 401", async () => {
     const res = await request(app).get("/api/concessions");
-    expect(res.status).toBe(503);
-    expect(res.body.code).toBe("FIREBASE_NOT_CONFIGURED");
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe("UNAUTHENTICATED");
   });
 
   it("ruta inexistente responde 404", async () => {

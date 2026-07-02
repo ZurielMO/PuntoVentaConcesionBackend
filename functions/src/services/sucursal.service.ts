@@ -18,8 +18,12 @@ const getCajasOf = async (sucursalId: string) => {
   return snap.docs.map(toData);
 };
 
-export const listSucursales = async () => {
-  const snap = await col().where("activo", "==", true).get();
+export const listSucursales = async (concesionId?: string) => {
+  let query: FirebaseFirestore.Query = col().where("activo", "==", true);
+  if (concesionId) {
+    query = query.where("concesion_id", "==", concesionId);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 

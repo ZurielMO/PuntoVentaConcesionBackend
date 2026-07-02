@@ -10,8 +10,24 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   ...doc.data(),
 });
 
-export const listTickets = async () => {
-  const snap = await col().get();
+export interface TicketListFilters {
+  concesionId?: string;
+  sucursalId?: string;
+  idUser?: string;
+}
+
+export const listTickets = async (filters: TicketListFilters = {}) => {
+  let query: FirebaseFirestore.Query = col();
+  if (filters.concesionId) {
+    query = query.where("concesionId", "==", filters.concesionId);
+  }
+  if (filters.sucursalId) {
+    query = query.where("sucursalId", "==", filters.sucursalId);
+  }
+  if (filters.idUser) {
+    query = query.where("idUser", "==", filters.idUser);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 
@@ -24,7 +40,7 @@ export const getTicketById = async (id: string) => {
 };
 
 export const createTicket = async (
-  idUser: string | undefined,
+  context: { concesionId: string; sucursalId?: string | null; idUser: string },
   data: {
     fecha: string;
     metodo_pago: string;
@@ -39,7 +55,9 @@ export const createTicket = async (
     subtotal: data.subtotal,
     total: data.total,
     status: data.status ?? "PENDIENTE",
-    idUser: idUser ?? null,
+    concesionId: context.concesionId,
+    sucursalId: context.sucursalId ?? null,
+    idUser: context.idUser,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };

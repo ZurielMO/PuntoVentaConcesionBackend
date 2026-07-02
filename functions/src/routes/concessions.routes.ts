@@ -1,55 +1,72 @@
+// routes/concessions.routes.ts
 import { Router } from "express";
 import * as q from "../controllers/concessions/concessions.query.controller";
 import * as c from "../controllers/concessions/concessions.command.controller";
 import * as productQ from "../controllers/products/products.query.controller";
-import * as productC from "../controllers/products/products.command.controller";
 import { validateBody } from "../middleware/validation.middleware";
-import { authMiddleware, requireAdmin } from "../utils/middlewares";
+import { authMiddleware } from "../utils/middlewares";
 import {
   createConcessionSchema,
   replaceConcessionSchema,
   assignConcessionPointsSchema,
+  assignUserToConcessionSchema,
 } from "../middleware/validators/concession.validator";
-import {
-  createProductSchema,
-} from "../middleware/validators/product.validator";
+import { requireSuperAdmin } from "../utils/roles.middlewares";
+import { productImagesUpload } from "../middleware/upload.middleware";
 
 const router = Router();
 
 router.use(authMiddleware);
 
-// IMPORTANTE: la ruta del typo intencional va ANTES de "/:id" para que
-// "/:id" no la capture. También existe un shortcut en app.ts.
+// Rutas estáticas antes de /:id
 router.post(
   "/asignarPuntosConsecion",
-  requireAdmin,
+  requireSuperAdmin,
   validateBody(assignConcessionPointsSchema),
   c.assignConcessionPoints,
 );
 
-// Productos anidados por concesión.
-router.get("/:concesionId/products", productQ.getProductsByConcession);
-router.post(
-  "/:concesionId/products",
-  requireAdmin,
-  validateBody(createProductSchema),
-  productC.createProduct,
-);
-
-router.get("/", q.getConcessions);
+router.get("/", requireSuperAdmin, q.getConcessions);
 router.post(
   "/",
-  requireAdmin,
+  requireSuperAdmin,
   validateBody(createConcessionSchema),
   c.createConcession,
 );
-router.get("/:id", q.getConcessionById);
+
+router.get("/:id", requireSuperAdmin, q.getConcessionById);
 router.put(
   "/:id",
-  requireAdmin,
+  requireSuperAdmin,
   validateBody(replaceConcessionSchema),
   c.replaceConcession,
 );
-router.delete("/:id", requireAdmin, c.deleteConcession);
+router.delete("/:id", requireSuperAdmin, c.deleteConcession);
+
+router.put(
+  "/:id/assign-user",
+  requireSuperAdmin,
+  validateBody(assignUserToConcessionSchema),
+  c.assignUserToConcession,
+);
+
+router.post(
+  "/:id/images",
+  requireSuperAdmin,
+  productImagesUpload.array("images", 5),
+  c.uploadConcessionImages,
+);
+
+router.delete(
+  "/:id/images/:index",
+  requireSuperAdmin,
+  c.deleteConcessionImage,
+);
+
+router.get(
+  "/:concesionId/products",
+  requireSuperAdmin,
+  productQ.getProductsByConcession,
+);
 
 export default router;

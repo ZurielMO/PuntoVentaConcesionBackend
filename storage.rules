@@ -1,8 +1,17 @@
 rules_version = '2';
 
-// Denegación por defecto. Los uploads pasan por Cloud Functions (Admin SDK).
+// Uploads vía Cloud Functions (Admin SDK).
+// Lectura pública de catálogo (productos y concesiones).
 service firebase.storage {
   match /b/{bucket}/o {
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /concessions/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
     match /{allPaths=**} {
       allow read, write: if false;
     }

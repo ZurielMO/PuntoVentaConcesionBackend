@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-export const userRolEnum = z.enum(["SUPERADMIN", "ADMIN", "EMPLEADO"]);
+const assignableRolSchema = z.enum(["ADMIN", "VENDEDOR", "EMPLEADO"]);
+
+export const userRolEnum = z.enum(["SUPERADMIN", "ADMIN", "VENDEDOR", "EMPLEADO"]);
 
 export const createUserSchema = z
   .object({
@@ -8,10 +10,20 @@ export const createUserSchema = z
     fecha_nacimiento: z.string().min(1),
     email: z.string().email("Email inválido"),
     password: z.string().min(6, "Mínimo 6 caracteres"),
-    rol: userRolEnum,
+    rol: assignableRolSchema,
     activo: z.boolean().optional().default(true),
+    concesionId: z.string().min(1),
+    sucursalId: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (data) => {
+      const rol = data.rol === "EMPLEADO" ? "VENDEDOR" : data.rol;
+      if (rol === "VENDEDOR" && !data.sucursalId) return false;
+      return true;
+    },
+    { message: "Los VENDEDORES requieren sucursalId", path: ["sucursalId"] },
+  );
 
 export const updateUserSchema = z
   .object({
@@ -19,8 +31,10 @@ export const updateUserSchema = z
     fecha_nacimiento: z.string().min(1).optional(),
     email: z.string().email().optional(),
     password: z.string().min(6).optional(),
-    rol: userRolEnum.optional(),
+    rol: assignableRolSchema.optional(),
     activo: z.boolean().optional(),
+    concesionId: z.string().min(1).optional(),
+    sucursalId: z.string().min(1).optional().nullable(),
   })
   .strict()
   .refine((d) => Object.keys(d).length > 0, {
