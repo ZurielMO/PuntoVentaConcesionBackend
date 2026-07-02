@@ -24,6 +24,8 @@ export interface User extends BaseEntity {
     concesionId?: string | null;
     /** Requerido para VENDEDOR. */
     sucursalId?: string | null;
+    /** Caja default del VENDEDOR dentro de su sucursal. */
+    cajaId?: string | null;
 }
 
 export interface Concession extends BaseEntity {
@@ -39,7 +41,9 @@ export interface Zona extends BaseEntity {
 }
 
 export interface Caja extends BaseEntity {
+    nombre: string;
     activo: boolean;
+    orden?: number;
 }
 
 export interface Sucursal extends BaseEntity {
@@ -86,6 +90,8 @@ export interface InventarioMovimiento extends BaseEntity {
     cantidad_anterior: number;
     cantidad_nueva: number;
     sucursal_id?: string | null;
+    cajaId?: string | null;
+    cajaNombre?: string | null;
     idUser?: string | null;
     ventaId?: string | null;
 }
@@ -112,10 +118,25 @@ export interface ComprobanteVenta extends BaseEntity {
     concesionId: string;
     sucursalId: string;
     inventarioId: string;
+    jornadaId?: string | null;
+    cajaId?: string | null;
+    cajaNombre?: string | null;
     idUser?: string | null;
+    cajeroNombre?: string | null;
     total: number;
     fecha?: FirebaseFirestore.Timestamp | FirebaseFirestore.FieldValue;
     detalle?: DetalleProducto[];
+}
+
+export interface AsignacionCajaJornada extends BaseEntity {
+    jornadaId: string;
+    concesionId: string;
+    sucursalId: string;
+    cajaId: string;
+    cajaNombre: string;
+    vendedorUid: string;
+    vendedorNombre: string;
+    activo: boolean;
 }
 
 export interface Ticket extends BaseEntity {

@@ -3,12 +3,13 @@ import { authAdmin, firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import { UserRole } from "../models";
+import { assertCajaBelongsToSucursal } from "./sucursal.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.USERS);
 const concessionsCol = () => firestorePos.collection(COLLECTIONS.CONCESIONES);
 const sucursalesCol = () => firestorePos.collection(COLLECTIONS.SUCURSALES);
 
-const toData = (doc: FirebaseFirestore.DocumentSnapshot) => {
+const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } => {
   const data = doc.data() ?? {};
   const { password, ...rest } = data as Record<string, unknown>;
   void password;
@@ -47,6 +48,7 @@ const validateUserBusinessRules = async (data: {
   rol: string;
   concesionId?: string | null;
   sucursalId?: string | null;
+  cajaId?: string | null;
 }) => {
   const rol = normalizeRole(data.rol);
 
@@ -80,7 +82,18 @@ const validateUserBusinessRules = async (data: {
       );
     }
     await assertSucursalBelongsToConcession(data.sucursalId, data.concesionId);
+    if (data.cajaId) {
+      await assertCajaBelongsToSucursal(data.sucursalId, data.cajaId);
+    }
   }
+};
+
+export const listVendedoresByConcesion = async (concesionId: string) => {
+  const snap = await col()
+    .where("concesionId", "==", concesionId)
+    .where("rol", "==", UserRole.VENDEDOR)
+    .get();
+  return snap.docs.map(toData).filter((u) => u.activo !== false);
 };
 
 export const listUsers = async (concesionId?: string) => {
@@ -109,12 +122,14 @@ export const createUser = async (data: {
   activo?: boolean;
   concesionId?: string | null;
   sucursalId?: string | null;
+  cajaId?: string | null;
 }) => {
   const normalizedRole = normalizeRole(data.rol);
   await validateUserBusinessRules({
     rol: normalizedRole,
     concesionId: data.concesionId,
     sucursalId: data.sucursalId,
+    cajaId: data.cajaId,
   });
 
   let authUser;
@@ -148,6 +163,9 @@ export const createUser = async (data: {
   if (normalizedRole === UserRole.VENDEDOR && data.sucursalId) {
     docData.sucursalId = data.sucursalId;
   }
+  if (normalizedRole === UserRole.VENDEDOR && data.cajaId) {
+    docData.cajaId = data.cajaId;
+  }
 
   try {
     await col().doc(authUser.uid).set(docData);
@@ -175,6 +193,7 @@ export const updateUser = async (
     activo: boolean;
     concesionId: string | null;
     sucursalId: string | null;
+    cajaId: string | null;
   }>,
 ) => {
   const ref = col().doc(id);
@@ -189,6 +208,8 @@ export const updateUser = async (
     data.concesionId !== undefined ? data.concesionId : (existing.concesionId as string | null);
   const mergedSucursalId =
     data.sucursalId !== undefined ? data.sucursalId : (existing.sucursalId as string | null);
+  const mergedCajaId =
+    data.cajaId !== undefined ? data.cajaId : (existing.cajaId as string | null);
 
   if (mergedRol === UserRole.SUPERADMIN) {
     throw new ApiError(403, "No se puede asignar rol SUPERADMIN", true, "FORBIDDEN");
@@ -198,6 +219,7 @@ export const updateUser = async (
     rol: mergedRol,
     concesionId: mergedConcesionId,
     sucursalId: mergedSucursalId,
+    cajaId: mergedCajaId,
   });
 
   const uid = (existing.uid as string) || id;
@@ -237,6 +259,53 @@ export const updateUser = async (
     ...firestoreData,
     updatedAt: FieldValue.serverTimestamp(),
   });
+  const updated = await ref.get();
+  return toData(updated);
+};
+
+export const assignVendedorToSucursalCaja = async (
+  userId: string,
+  data: { sucursalId: string; cajaId: string | null },
+  adminConcesionId: string,
+) => {
+  const ref = col().doc(userId);
+  const doc = await ref.get();
+  if (!doc.exists) {
+    throw new ApiError(404, "Usuario no encontrado", true, "NOT_FOUND");
+  }
+
+  const existing = doc.data() ?? {};
+  const rol = normalizeRole(existing.rol as string);
+  if (rol !== UserRole.VENDEDOR) {
+    throw new ApiError(
+      400,
+      "Solo se puede asignar sucursal/caja a vendedores",
+      true,
+      "INVALID_ROLE",
+    );
+  }
+  if (existing.concesionId !== adminConcesionId) {
+    throw new ApiError(
+      403,
+      "El vendedor no pertenece a tu concesión",
+      true,
+      "FORBIDDEN",
+    );
+  }
+
+  await validateUserBusinessRules({
+    rol: UserRole.VENDEDOR,
+    concesionId: adminConcesionId,
+    sucursalId: data.sucursalId,
+    cajaId: data.cajaId,
+  });
+
+  await ref.update({
+    sucursalId: data.sucursalId,
+    cajaId: data.cajaId,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
   const updated = await ref.get();
   return toData(updated);
 };

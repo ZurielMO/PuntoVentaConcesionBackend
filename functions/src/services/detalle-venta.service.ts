@@ -3,12 +3,17 @@ import { firestorePos } from "../config/firebase";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import { logMovimientoInTransaction } from "./inventario.service";
+import {
+  buildJornadaId,
+  resolveCajaActivaParaVendedor,
+} from "./asignacion-caja.service";
+import { getUserById } from "./user.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.COMPROBANTES_VENTA);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 const productsCol = () => firestorePos.collection(COLLECTIONS.PRODUCTS);
 
-const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
+const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } => ({
   id: doc.id,
   ...doc.data(),
 });
@@ -82,6 +87,50 @@ const resolveLineas = async (
   return lineas;
 };
 
+const resolveCajaForVenta = async (params: {
+  idUser: string;
+  sucursalId: string;
+  inventarioId: string;
+}) => {
+  const invDoc = await inventariosCol().doc(params.inventarioId).get();
+  if (!invDoc.exists) {
+    throw new ApiError(404, "Inventario no encontrado", true, "NOT_FOUND");
+  }
+  const inv = invDoc.data() ?? {};
+  const jornadaId = buildJornadaId(
+    String(inv.jornada_fecha ?? ""),
+    Number(inv.jornada_numero ?? 0),
+  );
+
+  let fallbackCajaId: string | null = null;
+  let cajeroNombre = "Cajero";
+  try {
+    const profile = await getUserById(params.idUser);
+    fallbackCajaId = (profile.cajaId as string | null | undefined) ?? null;
+    cajeroNombre = (profile.nombre as string) ?? cajeroNombre;
+  } catch {
+    // Perfil opcional si uid no está en users
+  }
+
+  const caja = await resolveCajaActivaParaVendedor({
+    vendedorUid: params.idUser,
+    jornadaId,
+    sucursalId: params.sucursalId,
+    fallbackCajaId,
+  });
+
+  if (!caja) {
+    throw new ApiError(
+      400,
+      "Debes tener una caja asignada para registrar ventas",
+      true,
+      "MISSING_CAJA",
+    );
+  }
+
+  return { jornadaId, caja, cajeroNombre };
+};
+
 export const createDetalleVenta = async (params: {
   ventaId: string;
   concesionId: string;
@@ -90,6 +139,16 @@ export const createDetalleVenta = async (params: {
   idUser?: string;
   productos: DetalleProductoInput[];
 }) => {
+  if (!params.idUser) {
+    throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
+  }
+
+  const { jornadaId, caja, cajeroNombre } = await resolveCajaForVenta({
+    idUser: params.idUser,
+    sucursalId: params.sucursalId,
+    inventarioId: params.inventarioId,
+  });
+
   const lineas = await resolveLineas(params.inventarioId, params.productos);
   const total = computeTotal(lineas);
 
@@ -146,6 +205,8 @@ export const createDetalleVenta = async (params: {
         cantidad_anterior: cantidadFinal,
         cantidad_nueva: nuevaCantidad,
         sucursal_id: params.sucursalId,
+        cajaId: caja.cajaId,
+        cajaNombre: caja.cajaNombre,
         idUser: params.idUser ?? null,
         ventaId: params.ventaId,
       });
@@ -156,7 +217,11 @@ export const createDetalleVenta = async (params: {
       concesionId: params.concesionId,
       sucursalId: params.sucursalId,
       inventarioId: params.inventarioId,
+      jornadaId,
+      cajaId: caja.cajaId,
+      cajaNombre: caja.cajaNombre,
       idUser: params.idUser ?? null,
+      cajeroNombre,
       total,
       fecha: FieldValue.serverTimestamp(),
       createdAt: FieldValue.serverTimestamp(),
@@ -188,19 +253,43 @@ export const listDetalleVentas = async (filters: {
   concesionId?: string;
   sucursalId?: string;
   idUser?: string;
+  cajaId?: string;
+  inventarioId?: string;
 }) => {
   let query: FirebaseFirestore.Query = col();
   if (filters.concesionId) {
     query = query.where("concesionId", "==", filters.concesionId);
+  } else if (filters.inventarioId) {
+    query = query.where("inventarioId", "==", filters.inventarioId);
+  }
+
+  const snap = await query.get();
+  let results = snap.docs.map(toData);
+
+  if (filters.inventarioId && filters.concesionId) {
+    results = results.filter((r) => r.inventarioId === filters.inventarioId);
   }
   if (filters.sucursalId) {
-    query = query.where("sucursalId", "==", filters.sucursalId);
+    results = results.filter((r) => r.sucursalId === filters.sucursalId);
+  }
+  if (filters.cajaId) {
+    results = results.filter((r) => r.cajaId === filters.cajaId);
   }
   if (filters.idUser) {
-    query = query.where("idUser", "==", filters.idUser);
+    results = results.filter((r) => r.idUser === filters.idUser);
   }
-  const snap = await query.get();
-  return snap.docs.map(toData);
+
+  results.sort((a, b) => {
+    const ta = (a.fecha as { _seconds?: number })?._seconds
+      ?? (a.createdAt as { _seconds?: number })?._seconds
+      ?? 0;
+    const tb = (b.fecha as { _seconds?: number })?._seconds
+      ?? (b.createdAt as { _seconds?: number })?._seconds
+      ?? 0;
+    return tb - ta;
+  });
+
+  return results;
 };
 
 export const updateDetalleVenta = async (
@@ -227,3 +316,5 @@ export const updateDetalleVenta = async (
 
   return getDetalleVentaById(id);
 };
+
+export const resolveCajaContextForUser = resolveCajaForVenta;

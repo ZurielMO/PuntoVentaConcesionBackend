@@ -50,6 +50,8 @@ export interface LogMovimientoInput {
   cantidad_anterior: number;
   cantidad_nueva: number;
   sucursal_id?: string | null;
+  cajaId?: string | null;
+  cajaNombre?: string | null;
   idUser?: string | null;
   ventaId?: string | null;
 }

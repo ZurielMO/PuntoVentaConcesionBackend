@@ -43,3 +43,22 @@ export const deleteSucursal = asyncHandler(
     res.status(204).send();
   },
 );
+
+export const createCaja = asyncHandler(async (req: Request, res: Response) => {
+  const data = await sucursalService.createCaja(req.params.id, req.body);
+  res.status(201).json({ success: true, data, message: "Caja creada" });
+});
+
+export const updateCaja = asyncHandler(async (req: Request, res: Response) => {
+  const data = await sucursalService.updateCaja(
+    req.params.id,
+    req.params.cajaId,
+    req.body,
+  );
+  res.status(200).json({ success: true, data, message: "Caja actualizada" });
+});
+
+export const deleteCaja = asyncHandler(async (req: Request, res: Response) => {
+  await sucursalService.softDeleteCaja(req.params.id, req.params.cajaId);
+  res.status(204).send();
+});

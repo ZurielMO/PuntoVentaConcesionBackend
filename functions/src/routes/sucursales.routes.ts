@@ -11,12 +11,16 @@ import {
   createSucursalSchema,
   updateSucursalSchema,
 } from "../middleware/validators/sucursal.validator";
+import {
+  createCajaSchema,
+  updateCajaSchema,
+} from "../middleware/validators/caja.validator";
 
 const router = Router();
 
 router.use(authMiddleware);
 
-router.get("/", q.getSucursales); // filtrado por concesión en el service
+router.get("/", q.getSucursales);
 router.post(
   "/",
   requireSucursalWriteAccess,
@@ -25,6 +29,19 @@ router.post(
 );
 router.get("/:id", requireSucursalReadAccess, q.getSucursalById);
 router.get("/:id/cajas", requireSucursalReadAccess, q.getCajas);
+router.post(
+  "/:id/cajas",
+  requireSucursalWriteAccess,
+  validateBody(createCajaSchema),
+  c.createCaja,
+);
+router.patch(
+  "/:id/cajas/:cajaId",
+  requireSucursalWriteAccess,
+  validateBody(updateCajaSchema),
+  c.updateCaja,
+);
+router.delete("/:id/cajas/:cajaId", requireSucursalWriteAccess, c.deleteCaja);
 router.put(
   "/:id",
   requireSucursalWriteAccess,

@@ -14,6 +14,7 @@ export const createUserSchema = z
     activo: z.boolean().optional().default(true),
     concesionId: z.string().min(1),
     sucursalId: z.string().min(1).optional(),
+    cajaId: z.string().min(1).optional().nullable(),
   })
   .strict()
   .refine(
@@ -35,6 +36,7 @@ export const updateUserSchema = z
     activo: z.boolean().optional(),
     concesionId: z.string().min(1).optional(),
     sucursalId: z.string().min(1).optional().nullable(),
+    cajaId: z.string().min(1).optional().nullable(),
   })
   .strict()
   .refine((d) => Object.keys(d).length > 0, {

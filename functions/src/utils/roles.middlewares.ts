@@ -120,6 +120,31 @@ export const requireAdminOrSuperAdmin = (
   next();
 };
 
+/** ADMIN de concesión (no SuperAdmin) con concesionId asignado. */
+export const requireAdminConcesion = (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void => {
+  const user = validateUser(req);
+  if (isSuperAdmin(user)) {
+    next();
+    return;
+  }
+  if (!isAdmin(user)) {
+    throw new ApiError(403, "Se requiere rol ADMIN", true, "FORBIDDEN");
+  }
+  if (!getUserConcessionId(user)) {
+    throw new ApiError(
+      403,
+      "Usuario sin concesión asignada",
+      true,
+      "FORBIDDEN",
+    );
+  }
+  next();
+};
+
 /** @deprecated Usar requireSuperAdmin para escritura de zonas */
 export const requireZonaWriteAccess = requireSuperAdmin;
 

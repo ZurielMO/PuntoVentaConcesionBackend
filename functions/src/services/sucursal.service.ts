@@ -10,12 +10,33 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   ...doc.data(),
 });
 
-const getCajasOf = async (sucursalId: string) => {
+const normalizeCaja = (doc: FirebaseFirestore.DocumentSnapshot) => {
+  const data = doc.data() ?? {};
+  return {
+    id: doc.id,
+    nombre: (data.nombre as string | undefined) ?? doc.id,
+    activo: data.activo !== false,
+    orden: Number(data.orden ?? 0),
+    ...data,
+  };
+};
+
+const assertSucursalExists = async (sucursalId: string) => {
+  const doc = await col().doc(sucursalId).get();
+  if (!doc.exists || doc.data()?.activo === false) {
+    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
+  }
+  return doc;
+};
+
+const getCajasOf = async (sucursalId: string, includeInactive = false) => {
   const snap = await col()
     .doc(sucursalId)
     .collection(SUBCOLLECTIONS.CAJAS)
     .get();
-  return snap.docs.map(toData);
+  const cajas = snap.docs.map(normalizeCaja);
+  if (includeInactive) return cajas;
+  return cajas.filter((c) => c.activo !== false);
 };
 
 export const listSucursales = async (concesionId?: string) => {
@@ -24,31 +45,109 @@ export const listSucursales = async (concesionId?: string) => {
     query = query.where("concesion_id", "==", concesionId);
   }
   const snap = await query.get();
-  return snap.docs.map(toData);
+  const sucursales = await Promise.all(
+    snap.docs.map(async (doc) => {
+      const cajas = await getCajasOf(doc.id);
+      return { ...toData(doc), cajas };
+    }),
+  );
+  return sucursales;
 };
 
 export const getSucursalById = async (id: string) => {
+  await assertSucursalExists(id);
   const doc = await col().doc(id).get();
-  if (!doc.exists || doc.data()?.activo === false) {
-    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
-  }
-  const cajas = await getCajasOf(id);
+  const cajas = await getCajasOf(id, true);
   return { ...toData(doc), cajas };
 };
 
-export const getCajas = async (id: string) => {
-  const doc = await col().doc(id).get();
-  if (!doc.exists) {
-    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
-  }
-  return getCajasOf(id);
+export const getCajas = async (id: string, includeInactive = false) => {
+  await assertSucursalExists(id);
+  return getCajasOf(id, includeInactive);
 };
 
-const setCajas = async (sucursalId: string, cajas: string[]) => {
+export const getCajaById = async (sucursalId: string, cajaId: string) => {
+  await assertSucursalExists(sucursalId);
+  const doc = await col()
+    .doc(sucursalId)
+    .collection(SUBCOLLECTIONS.CAJAS)
+    .doc(cajaId)
+    .get();
+  if (!doc.exists) {
+    throw new ApiError(404, "Caja no encontrada", true, "NOT_FOUND");
+  }
+  return normalizeCaja(doc);
+};
+
+export const assertCajaBelongsToSucursal = async (
+  sucursalId: string,
+  cajaId: string,
+) => {
+  const caja = await getCajaById(sucursalId, cajaId);
+  if (caja.activo === false) {
+    throw new ApiError(400, "La caja está inactiva", true, "CAJA_INACTIVE");
+  }
+  return caja;
+};
+
+export const createCaja = async (
+  sucursalId: string,
+  data: { nombre: string; orden?: number },
+) => {
+  await assertSucursalExists(sucursalId);
+  const ref = col().doc(sucursalId).collection(SUBCOLLECTIONS.CAJAS).doc();
+  const payload = {
+    nombre: data.nombre.trim(),
+    activo: true,
+    orden: data.orden ?? 0,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await ref.set(payload);
+  const created = await ref.get();
+  return normalizeCaja(created);
+};
+
+export const updateCaja = async (
+  sucursalId: string,
+  cajaId: string,
+  data: { nombre?: string; activo?: boolean; orden?: number },
+) => {
+  await getCajaById(sucursalId, cajaId);
+  const ref = col().doc(sucursalId).collection(SUBCOLLECTIONS.CAJAS).doc(cajaId);
+  const update: Record<string, unknown> = {
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (data.nombre !== undefined) update.nombre = data.nombre.trim();
+  if (data.activo !== undefined) update.activo = data.activo;
+  if (data.orden !== undefined) update.orden = data.orden;
+  await ref.update(update);
+  const updated = await ref.get();
+  return normalizeCaja(updated);
+};
+
+export const softDeleteCaja = async (sucursalId: string, cajaId: string) => {
+  return updateCaja(sucursalId, cajaId, { activo: false });
+};
+
+/** Compat legacy: crea cajas por nombre al crear sucursal (doc id = nombre). */
+const setCajasLegacy = async (sucursalId: string, cajas: string[]) => {
   const batch = firestorePos.batch();
   const cajasRef = col().doc(sucursalId).collection(SUBCOLLECTIONS.CAJAS);
   for (const nombre of cajas) {
-    batch.set(cajasRef.doc(nombre), { activo: true }, { merge: true });
+    const trimmed = nombre.trim();
+    if (!trimmed) continue;
+    batch.set(
+      cajasRef.doc(trimmed),
+      {
+        nombre: trimmed,
+        activo: true,
+        orden: 0,
+        updatedAt: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
   }
   await batch.commit();
 };
@@ -70,7 +169,7 @@ export const createSucursal = async (
 
   const cajas = data.sucursal.cajas ?? [];
   if (cajas.length > 0) {
-    await setCajas(ref.id, cajas);
+    await setCajasLegacy(ref.id, cajas);
   }
 
   return getSucursalById(ref.id);
@@ -90,7 +189,6 @@ export const updateSucursal = async (
     throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
   }
 
-  // No se permite cambiar concesion_id.
   const update: Record<string, unknown> = {
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -101,7 +199,7 @@ export const updateSucursal = async (
   await ref.update(update);
 
   if (data.sucursal?.cajas) {
-    await setCajas(id, data.sucursal.cajas);
+    await setCajasLegacy(id, data.sucursal.cajas);
   }
 
   return getSucursalById(id);

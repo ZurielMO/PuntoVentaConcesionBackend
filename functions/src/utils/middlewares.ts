@@ -61,6 +61,7 @@ const findPosProfile = async (
       ...data,
       concesionId: data?.concesionId || data?.idConcesion || null,
       sucursalId: data?.sucursalId || data?.idSucursal || null,
+      cajaId: data?.cajaId || null,
     };
   }
 
@@ -73,6 +74,7 @@ const findPosProfile = async (
       ...data,
       concesionId: data?.concesionId || data?.idConcesion || null,
       sucursalId: data?.sucursalId || data?.idSucursal || null,
+      cajaId: data?.cajaId || null,
     };
   }
 
@@ -89,6 +91,7 @@ const findPosProfile = async (
         ...data,
         concesionId: data?.concesionId || data?.idConcesion || null,
         sucursalId: data?.sucursalId || data?.idSucursal || null,
+        cajaId: data?.cajaId || null,
       };
     }
   }
@@ -152,6 +155,7 @@ export const authMiddleware = asyncHandler(
       rol: normalizedRole,
       concesionId: profile?.concesionId || profile?.idConcesion || null,
       sucursalId: profile?.sucursalId || profile?.idSucursal || null,
+      cajaId: profile?.cajaId || null,
       activo: profile?.activo !== false,
       ...(profile ?? {}),
     } as Express.AuthenticatedUser;
