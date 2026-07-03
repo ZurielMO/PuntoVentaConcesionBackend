@@ -14,7 +14,10 @@ const col = (name: string) => firestorePos.collection(name);
 export const getUserRole = (user: Express.AuthenticatedUser | undefined): UserRole | undefined => {
   if (!user) return undefined;
   const rol = typeof user.rol === "string" ? user.rol.toUpperCase() : undefined;
-  if (rol === "EMPLEADO") return UserRole.VENDEDOR;
+  if (!rol) return undefined;
+  if (rol === "EMPLEADO" || rol === "CONCESION_VENDEDOR") return UserRole.VENDEDOR;
+  if (rol === "CONCESION_SUPERADMIN") return UserRole.SUPERADMIN;
+  if (rol === "CONCESION_ADMIN") return UserRole.ADMIN;
   return rol as UserRole | undefined;
 };
 

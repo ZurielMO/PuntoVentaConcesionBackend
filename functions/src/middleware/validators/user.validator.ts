@@ -1,8 +1,22 @@
 import { z } from "zod";
 
-const assignableRolSchema = z.enum(["ADMIN", "VENDEDOR", "EMPLEADO"]);
+const assignableRolSchema = z.enum([
+  "ADMIN",
+  "VENDEDOR",
+  "EMPLEADO",
+  "CONCESION_ADMIN",
+  "CONCESION_VENDEDOR",
+]);
 
-export const userRolEnum = z.enum(["SUPERADMIN", "ADMIN", "VENDEDOR", "EMPLEADO"]);
+export const userRolEnum = z.enum([
+  "SUPERADMIN",
+  "ADMIN",
+  "VENDEDOR",
+  "EMPLEADO",
+  "CONCESION_SUPERADMIN",
+  "CONCESION_ADMIN",
+  "CONCESION_VENDEDOR",
+]);
 
 export const createUserSchema = z
   .object({
@@ -19,7 +33,12 @@ export const createUserSchema = z
   .strict()
   .refine(
     (data) => {
-      const rol = data.rol === "EMPLEADO" ? "VENDEDOR" : data.rol;
+      const rol =
+        data.rol === "EMPLEADO" || data.rol === "CONCESION_VENDEDOR"
+          ? "VENDEDOR"
+          : data.rol === "CONCESION_ADMIN"
+            ? "ADMIN"
+            : data.rol;
       if (rol === "VENDEDOR" && !data.sucursalId) return false;
       return true;
     },

@@ -1,8 +1,9 @@
 import { Request, Response, NextFunction } from "express";
-import { authAdmin, firestorePos, hasAdminCredentials } from "../config/firebase";
-import { COLLECTIONS } from "../config/firestore.constants";
+import { hasAdminCredentials } from "../config/firebase";
+import { hasAppOficialCredentials } from "../config/app.firebase";
 import { ApiError } from "./api-error";
 import { asyncHandler } from "./error-handler";
+import * as authService from "../services/auth.service";
 
 const isProductionRuntime = (): boolean =>
   process.env.NODE_ENV === "production" ||
@@ -45,70 +46,20 @@ export const requireFirebaseReady = (
   next();
 };
 
-/** Busca el perfil POS del usuario en la colección `users`. */
-const findPosProfile = async (
-  uid: string,
-  email?: string,
-): Promise<FirebaseFirestore.DocumentData | null> => {
-  const users = firestorePos.collection(COLLECTIONS.USERS);
-
-  // 1) docId == uid
-  const byDocId = await users.doc(uid).get();
-  if (byDocId.exists) {
-    const data = byDocId.data();
-    return {
-      id: byDocId.id,
-      ...data,
-      concesionId: data?.concesionId || data?.idConcesion || null,
-      sucursalId: data?.sucursalId || data?.idSucursal || null,
-      cajaId: data?.cajaId || null,
-    };
-  }
-
-  // 2) campo uid == uid
-  const byUid = await users.where("uid", "==", uid).limit(1).get();
-  if (!byUid.empty) {
-    const data = byUid.docs[0].data();
-    return {
-      id: byUid.docs[0].id,
-      ...data,
-      concesionId: data?.concesionId || data?.idConcesion || null,
-      sucursalId: data?.sucursalId || data?.idSucursal || null,
-      cajaId: data?.cajaId || null,
-    };
-  }
-
-  // 3) email legacy
-  if (email) {
-    const byEmail = await users
-      .where("email", "==", email.toLowerCase())
-      .limit(1)
-      .get();
-    if (!byEmail.empty) {
-      const data = byEmail.docs[0].data();
-      return {
-        id: byEmail.docs[0].id,
-        ...data,
-        concesionId: data?.concesionId || data?.idConcesion || null,
-        sucursalId: data?.sucursalId || data?.idSucursal || null,
-        cajaId: data?.cajaId || null,
-      };
-    }
-  }
-
-  return null;
-};
-
 /**
- * Autenticación requerida con Firebase ID token.
- * Verifica el token y enriquece `req.user` con el perfil POS (colección users).
+ * Autenticación requerida con JWT de app-oficial-leon (mismo esquema que BackendCL).
+ * Verifica el token y enriquece `req.user` con el perfil POS (usuariosApp).
  */
 export const authMiddleware = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
-    if (!hasAdminCredentials && !isProductionRuntime()) {
+    if (
+      !hasAppOficialCredentials &&
+      !hasAdminCredentials &&
+      !isProductionRuntime()
+    ) {
       throw new ApiError(
         503,
-        "Servicio no disponible: faltan credenciales del servidor. Coloca serviceAccountKey.json en la raiz del repo.",
+        "Servicio no disponible: faltan credenciales de app-oficial-leon (SERVICE_ACCOUNT_APP_OFICIAL).",
         true,
         "FIREBASE_NOT_CONFIGURED",
       );
@@ -125,39 +76,22 @@ export const authMiddleware = asyncHandler(
     }
 
     const token = authHeader.slice("Bearer ".length).trim();
-
-    let decoded;
-    try {
-      decoded = await authAdmin.verifyIdToken(token);
-    } catch {
-      throw new ApiError(
-        401,
-        "Token inválido o expirado",
-        true,
-        "INVALID_TOKEN",
-      );
-    }
-
-    const profile = await findPosProfile(decoded.uid, decoded.email);
-
-    const normalizedRole =
-      typeof (profile?.rol || decoded.rol) === "string"
-        ? String(profile?.rol || decoded.rol).toUpperCase() === "EMPLEADO"
-          ? "VENDEDOR"
-          : String(profile?.rol || decoded.rol).toUpperCase()
-        : "VENDEDOR";
+    const usuario = await authService.resolveSessionFromToken(token);
 
     req.user = {
-      uid: decoded.uid,
-      email: decoded.email,
-      admin: decoded.admin === true,
-      isAdmin: decoded.isAdmin === true,
-      rol: normalizedRole,
-      concesionId: profile?.concesionId || profile?.idConcesion || null,
-      sucursalId: profile?.sucursalId || profile?.idSucursal || null,
-      cajaId: profile?.cajaId || null,
-      activo: profile?.activo !== false,
-      ...(profile ?? {}),
+      ...usuario,
+      uid: usuario.uid,
+      email: usuario.email,
+      rol: usuario.rol,
+      rolOriginal: usuario.rolOriginal,
+      from_concesion: usuario.from_concesion,
+      concesionId: usuario.concesionId,
+      sucursalId: usuario.sucursalId,
+      cajaId: usuario.cajaId,
+      activo: usuario.activo,
+      admin: false,
+      isAdmin: false,
+      nombre: usuario.nombre,
     } as Express.AuthenticatedUser;
 
     next();
@@ -168,18 +102,18 @@ export const authMiddleware = asyncHandler(
 export const optionalAuthMiddleware = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ") || !hasAdminCredentials) {
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
       next();
       return;
     }
     try {
       const token = authHeader.slice("Bearer ".length).trim();
-      const decoded = await authAdmin.verifyIdToken(token);
-      const profile = await findPosProfile(decoded.uid, decoded.email);
+      const usuario = await authService.resolveSessionFromToken(token);
       req.user = {
-        uid: decoded.uid,
-        email: decoded.email,
-        ...(profile ?? {}),
+        ...usuario,
+        uid: usuario.uid,
+        email: usuario.email,
+        rol: usuario.rol,
       } as Express.AuthenticatedUser;
     } catch {
       // Ignorar token inválido en modo opcional.

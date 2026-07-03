@@ -16,7 +16,9 @@
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
     "test": "jest --runInBand",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "migrate:users-app-oficial": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts",
+    "migrate:users-app-oficial:promote": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts --promote-conflicts"
   },
   "dependencies": {
     "axios": "^1.18.1",

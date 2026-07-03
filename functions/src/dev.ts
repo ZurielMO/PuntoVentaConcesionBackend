@@ -8,6 +8,16 @@ if (process.env.IS_LOCAL !== "true") {
   );
 }
 
+if (!process.env.JWT_SECRET?.trim()) {
+  console.error(
+    "ERROR: JWT_SECRET no está definido en functions/.env.local.\n" +
+      "  Agrégalo (el mismo valor que BackendCL en producción):\n" +
+      "  JWT_SECRET=tu_secreto_compartido\n" +
+      "  JWT_EXPIRES_IN=7d",
+  );
+  process.exit(1);
+}
+
 const PORT = Number(process.env.PORT) || 3000;
 
 app.listen(PORT, () => {
@@ -17,5 +27,6 @@ app.listen(PORT, () => {
   console.log(`  Health:    http://localhost:${PORT}/api`);
   console.log(`  Swagger:   http://localhost:${PORT}/api-docs (o /docs)`);
   console.log("  Admin SDK: Inicializado");
+  console.log("  JWT:       configurado");
   console.log("----------------------------------------------------------");
 });

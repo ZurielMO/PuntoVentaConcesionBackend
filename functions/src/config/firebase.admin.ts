@@ -14,7 +14,11 @@ import {
  */
 export let hasAdminCredentials = false;
 
-if (!admin.apps.length) {
+/** App default ([DEFAULT]) del POS (puntoventacl). No confundir con apps nombradas (APP_OFICIAL). */
+const getDefaultApp = (): admin.app.App | undefined =>
+  admin.apps.find((app) => app?.name === "[DEFAULT]") ?? undefined;
+
+if (!getDefaultApp()) {
   const isCloudFunction = process.env.FUNCTION_NAME || process.env.K_SERVICE;
 
   if (isCloudFunction) {
@@ -31,7 +35,10 @@ if (!admin.apps.length) {
     const resolvedPath = resolveServiceAccountPath({
       fromDir: __dirname,
       explicitPath: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      // Preferir serviceAccountKey.json del POS aunque no filtre por projectId
+      // si solo hay un archivo en la raíz.
       projectId: projectId?.trim() || undefined,
+      extraFilenames: ["serviceAccountKey.json", "serviceAccountPos.json"],
     });
 
     if (resolvedPath) {
@@ -42,6 +49,18 @@ if (!admin.apps.length) {
       serviceAccount = JSON.parse(
         process.env.SERVICE_ACCOUNT_KEY,
       ) as admin.ServiceAccount;
+    }
+
+    // Fallback: serviceAccountKey.json sin filtrar por projectId
+    if (!serviceAccount) {
+      const fallbackPath = resolveServiceAccountPath({
+        fromDir: __dirname,
+        explicitPath: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+        extraFilenames: ["serviceAccountKey.json", "serviceAccountPos.json"],
+      });
+      if (fallbackPath) {
+        serviceAccount = loadServiceAccountFromFile(fallbackPath);
+      }
     }
 
     const storageBucket =
@@ -67,7 +86,7 @@ if (!admin.apps.length) {
 console.log(
   "🔥 Firebase apps inicializadas:",
   admin.apps.map((app) => app?.name ?? "NULL"),
-  hasAdminCredentials ? "(con credenciales)" : "(SIN credenciales)",
+  hasAdminCredentials ? "(POS con credenciales)" : "(POS SIN credenciales)",
 );
 
 export { admin };
