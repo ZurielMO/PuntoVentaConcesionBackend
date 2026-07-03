@@ -4,6 +4,7 @@ export const assignVendedorSchema = z
   .object({
     sucursalId: z.string().min(1),
     cajaId: z.string().min(1).nullable(),
+    concesionId: z.string().min(1).optional(),
   })
   .strict();
 

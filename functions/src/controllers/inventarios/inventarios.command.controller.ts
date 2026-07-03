@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
 import * as inventarioService from "../../services/inventario.service";
-import { getUserConcessionId } from "../../utils/roles.middlewares";
 
 export const createInventario = asyncHandler(
   async (req: Request, res: Response) => {
@@ -17,16 +16,18 @@ export const createInventario = asyncHandler(
 
 export const openInventarioJornadaActiva = asyncHandler(
   async (req: Request, res: Response) => {
-    const concesionId = getUserConcessionId(req.user);
-    if (!concesionId) {
-      res.status(403).json({
+    const sucursalId =
+      (req.body?.sucursalId as string | undefined) ||
+      (req.query.sucursalId as string | undefined);
+    if (!sucursalId) {
+      res.status(400).json({
         success: false,
-        message: "Usuario sin concesión asignada",
+        message: "Se requiere sucursalId",
       });
       return;
     }
     const { inventario, jornada } =
-      await inventarioService.getOrCreateInventarioJornadaActiva(concesionId);
+      await inventarioService.getOrCreateInventarioJornadaActiva(sucursalId);
     res.status(201).json({
       success: true,
       data: { inventario, jornada },

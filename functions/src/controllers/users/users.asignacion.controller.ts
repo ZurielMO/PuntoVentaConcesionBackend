@@ -3,6 +3,7 @@ import { asyncHandler } from "../../utils/error-handler";
 import { ApiError } from "../../utils/api-error";
 import * as userService from "../../services/user.service";
 import {
+  getSucursalConcessionId,
   getUserConcessionId,
   isSuperAdmin,
   validateUser,
@@ -21,7 +22,9 @@ export const assignVendedor = asyncHandler(async (req: Request, res: Response) =
   }
 
   const concesionId =
-    (req.body.concesionId as string | undefined) ?? adminConcesionId;
+    (req.body.concesionId as string | undefined) ??
+    adminConcesionId ??
+    (await getSucursalConcessionId(req.body.sucursalId));
   if (!concesionId) {
     throw new ApiError(400, "Se requiere concesionId", true, "MISSING_CONCESSION");
   }

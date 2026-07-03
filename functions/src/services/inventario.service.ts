@@ -30,12 +30,12 @@ export const normalizeFecha = (fecha: string): string => {
   );
 };
 
-/** ID compuesto por concesión: `2026-03-14__J11__concesionId`. */
+/** ID compuesto por sucursal: `2026-03-14__J11__sucursalId`. */
 export const buildInventarioId = (
   fecha: string,
   jornadaNumero: string | number,
-  concesionId: string,
-): string => `${normalizeFecha(fecha)}__J${jornadaNumero}__${concesionId}`;
+  sucursalId: string,
+): string => `${normalizeFecha(fecha)}__J${jornadaNumero}__${sucursalId}`;
 
 const productosCol = (inventarioId: string) =>
   col().doc(inventarioId).collection(SUBCOLLECTIONS.PRODUCTOS);
@@ -80,21 +80,26 @@ export const listMovimientos = async (inventarioId: string, limit = 100) => {
   return snap.docs.map(toData);
 };
 
-const assertConcessionExists = async (concesionId: string) => {
-  const doc = await firestorePos.collection(COLLECTIONS.CONCESIONES).doc(concesionId).get();
+const getSucursalOrThrow = async (sucursalId: string) => {
+  const doc = await firestorePos.collection(COLLECTIONS.SUCURSALES).doc(sucursalId).get();
   if (!doc.exists || doc.data()?.activo === false) {
-    throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
+    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
   }
+  const concesionId = doc.data()?.concesion_id as string | undefined;
+  if (!concesionId) {
+    throw new ApiError(400, "Sucursal sin concesión asignada", true, "BAD_REQUEST");
+  }
+  return { id: doc.id, concesionId };
 };
 
-export const createInventarioPorConcesion = async (
+export const createInventarioPorSucursal = async (
   jornadaNumero: string | number,
   fechaJornada: string,
-  concesionId: string,
+  sucursalId: string,
 ) => {
-  await assertConcessionExists(concesionId);
+  const sucursal = await getSucursalOrThrow(sucursalId);
   const fecha = normalizeFecha(fechaJornada);
-  const id = buildInventarioId(fecha, jornadaNumero, concesionId);
+  const id = buildInventarioId(fecha, jornadaNumero, sucursalId);
   const ref = col().doc(id);
 
   const existing = await ref.get();
@@ -106,7 +111,8 @@ export const createInventarioPorConcesion = async (
   await ref.set({
     jornada_fecha: fecha,
     jornada_numero: Number(jornadaNumero),
-    concesion_id: concesionId,
+    sucursal_id: sucursalId,
+    concesion_id: sucursal.concesionId,
     activo: true,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -117,14 +123,14 @@ export const createInventarioPorConcesion = async (
 };
 
 export const getOrCreateInventarioJornadaActiva = async (
-  concesionId: string,
+  sucursalId: string,
   includeProductos = true,
 ) => {
   const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
-  const inventario = await createInventarioPorConcesion(
+  const inventario = await createInventarioPorSucursal(
     jornadaNumero,
     fecha,
-    concesionId,
+    sucursalId,
   );
   if (!includeProductos) {
     return { inventario, jornada: detalle };
@@ -140,11 +146,11 @@ export const getOrCreateInventarioJornadaActiva = async (
 };
 
 export const getInventarioJornadaActiva = async (
-  concesionId: string,
+  sucursalId: string,
   includeProductos = true,
 ) => {
   const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
-  const id = buildInventarioId(fecha, jornadaNumero, concesionId);
+  const id = buildInventarioId(fecha, jornadaNumero, sucursalId);
   const doc = await col().doc(id).get();
 
   if (!doc.exists || doc.data()?.activo === false) {
@@ -166,13 +172,23 @@ export const getInventarioJornadaActiva = async (
   };
 };
 
-export const listInventarios = async (includeProductos: boolean, concesionId?: string) => {
+export const listInventarios = async (
+  includeProductos: boolean,
+  filters?: { concesionId?: string; sucursalId?: string },
+) => {
   let query: FirebaseFirestore.Query = col().where("activo", "==", true);
-  if (concesionId) {
-    query = query.where("concesion_id", "==", concesionId);
+  if (filters?.concesionId) {
+    query = query.where("concesion_id", "==", filters.concesionId);
+  } else if (filters?.sucursalId) {
+    query = query.where("sucursal_id", "==", filters.sucursalId);
   }
   const snap = await query.get();
-  const inventarios = snap.docs.map(toData);
+  let inventarios = snap.docs.map(toData);
+  if (filters?.sucursalId) {
+    inventarios = inventarios.filter(
+      (inv) => (inv as { sucursal_id?: string }).sucursal_id === filters.sucursalId,
+    );
+  }
 
   if (!includeProductos) return inventarios;
 
@@ -200,22 +216,7 @@ export const getInventarioById = async (
   return { ...inv, productos: prodSnap.docs.map(toData) };
 };
 
-/** @deprecated Legacy: inventario por sucursal. Usar createInventarioPorConcesion. */
-export const createInventario = async (
-  jornadaNumero: string,
-  fechaJornada: string,
-  sucursalId: string,
-) => {
-  const sucursalDoc = await firestorePos.collection(COLLECTIONS.SUCURSALES).doc(sucursalId).get();
-  if (!sucursalDoc.exists) {
-    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
-  }
-  const concesionId = sucursalDoc.data()?.concesion_id;
-  if (!concesionId) {
-    throw new ApiError(400, "Sucursal sin concesión asignada", true, "BAD_REQUEST");
-  }
-  return createInventarioPorConcesion(jornadaNumero, fechaJornada, concesionId);
-};
+export const createInventario = createInventarioPorSucursal;
 
 export const softDeleteInventario = async (id: string) => {
   const ref = col().doc(id);

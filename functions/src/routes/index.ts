@@ -17,6 +17,8 @@ import ticketsRoutes from "./tickets.routes";
 import cortesRoutes from "./cortes.routes";
 import usersRoutes from "./users.routes";
 import detalleVentaRoutes from "./detalle-venta.routes";
+import combosRoutes from "./combos.routes";
+import descuentosRoutes from "./descuentos.routes";
 
 const router = Router();
 
@@ -42,5 +44,7 @@ router.use("/tickets", ticketsRoutes);
 router.use("/cortes", cortesRoutes);
 router.use("/users", usersRoutes);
 router.use("/detalle-venta", detalleVentaRoutes);
+router.use("/combos", combosRoutes);
+router.use("/descuentos", descuentosRoutes);
 
 export default router;

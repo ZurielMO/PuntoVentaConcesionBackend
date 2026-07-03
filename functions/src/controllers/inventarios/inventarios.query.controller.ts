@@ -1,9 +1,13 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
+import { ApiError } from "../../utils/api-error";
 import * as inventarioService from "../../services/inventario.service";
 import {
+  getSucursalConcessionId,
   getUserConcessionId,
+  getUserSucursalId,
   isSuperAdmin,
+  isVendedor,
 } from "../../utils/roles.middlewares";
 
 const wantsProductos = (req: Request): boolean =>
@@ -17,32 +21,53 @@ const getEffectiveConcesionId = (req: Request): string | undefined => {
   return getUserConcessionId(user);
 };
 
+/** Resuelve la sucursal objetivo validando que el rol tenga acceso a ella. */
+const resolveSucursalId = async (req: Request): Promise<string> => {
+  const user = req.user;
+  const querySucursalId = req.query.sucursalId as string | undefined;
+
+  if (isSuperAdmin(user)) {
+    if (!querySucursalId) {
+      throw new ApiError(400, "Se requiere sucursalId", true, "MISSING_SUCURSAL");
+    }
+    return querySucursalId;
+  }
+
+  if (isVendedor(user)) {
+    const sucursalId = getUserSucursalId(user);
+    if (!sucursalId) {
+      throw new ApiError(403, "Usuario sin sucursal asignada", true, "FORBIDDEN");
+    }
+    return sucursalId;
+  }
+
+  // ADMIN: puede consultar cualquier sucursal de su concesión
+  if (!querySucursalId) {
+    throw new ApiError(400, "Se requiere sucursalId", true, "MISSING_SUCURSAL");
+  }
+  const userConcessionId = getUserConcessionId(user);
+  const sucursalConcesionId = await getSucursalConcessionId(querySucursalId);
+  if (!userConcessionId || userConcessionId !== sucursalConcesionId) {
+    throw new ApiError(403, "No tienes acceso a esta sucursal", true, "FORBIDDEN");
+  }
+  return querySucursalId;
+};
+
 export const getInventarios = asyncHandler(async (req: Request, res: Response) => {
-  const data = await inventarioService.listInventarios(
-    wantsProductos(req),
-    getEffectiveConcesionId(req),
-  );
+  const data = await inventarioService.listInventarios(wantsProductos(req), {
+    concesionId: getEffectiveConcesionId(req),
+    sucursalId: req.query.sucursalId as string | undefined,
+  });
 
   res.status(200).json({ success: true, data, count: data.length });
 });
 
 export const getInventarioJornadaActiva = asyncHandler(
   async (req: Request, res: Response) => {
-    const user = req.user;
-    const concesionId = isSuperAdmin(user)
-      ? (req.query.concesionId as string | undefined)
-      : getUserConcessionId(user);
-
-    if (!concesionId) {
-      res.status(403).json({
-        success: false,
-        message: "Usuario sin concesión asignada",
-      });
-      return;
-    }
+    const sucursalId = await resolveSucursalId(req);
 
     const { inventario, jornada } = await inventarioService.getInventarioJornadaActiva(
-      concesionId,
+      sucursalId,
       wantsProductos(req),
     );
 

@@ -4,8 +4,8 @@ import * as a from "../controllers/jornadas/asignacion-caja.controller";
 import { authMiddleware } from "../utils/middlewares";
 import { validateBody } from "../middleware/validation.middleware";
 import {
-  requireAdminOrSuperAdmin,
   requireAuthenticated,
+  requireSuperAdmin,
 } from "../utils/roles.middlewares";
 import { upsertAsignacionesCajasSchema } from "../middleware/validators/asignacion-caja.validator";
 
@@ -21,7 +21,7 @@ router.get(
 router.put(
   "/:jornadaId/asignaciones-cajas",
   authMiddleware,
-  requireAdminOrSuperAdmin,
+  requireSuperAdmin,
   validateBody(upsertAsignacionesCajasSchema),
   a.upsertAsignacionesCajas,
 );

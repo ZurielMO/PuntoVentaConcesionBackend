@@ -28,7 +28,7 @@ router.post(
 );
 router.patch(
   "/:id/asignacion",
-  requireAdminConcesion,
+  requireSuperAdmin,
   validateBody(assignVendedorSchema),
   a.assignVendedor,
 );

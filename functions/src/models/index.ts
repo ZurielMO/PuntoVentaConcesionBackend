@@ -150,6 +150,40 @@ export interface Ticket extends BaseEntity {
     idUser?: string | null;
 }
 
+export interface ComboProducto {
+    producto_id: string;
+    cantidad: number;
+}
+
+export interface Combo extends BaseEntity {
+    concesion_id: string;
+    titulo: string;
+    descripcion?: string | null;
+    productos: ComboProducto[];
+    /** Precio de venta del combo. */
+    precio: number;
+    activo: boolean;
+    /** Persona que creó el combo. */
+    createdByUid?: string | null;
+    createdByNombre?: string | null;
+}
+
+export type DescuentoTipo = "2X1" | "3X2" | "PORCENTAJE" | "MONTO";
+
+export interface Descuento extends BaseEntity {
+    concesion_id: string;
+    titulo: string;
+    descripcion?: string | null;
+    tipo: DescuentoTipo;
+    /** Porcentaje (1-100) o monto fijo. null para promos tipo 2X1/3X2. */
+    valor?: number | null;
+    /** Productos de la concesión a los que aplica la promoción. */
+    producto_ids: string[];
+    activo: boolean;
+    createdByUid?: string | null;
+    createdByNombre?: string | null;
+}
+
 export interface Corte extends BaseEntity {
     ventaId: string | null;
     idUser: string | null;

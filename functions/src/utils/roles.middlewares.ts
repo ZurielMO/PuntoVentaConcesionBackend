@@ -177,39 +177,17 @@ export const requireSucursalReadAccess = asyncHandler(
   },
 );
 
+/** Sucursales y cajas: escritura exclusiva de SUPERADMIN. ADMIN solo consulta. */
 export const requireSucursalWriteAccess = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
     const user = validateUser(req);
-    if (isSuperAdmin(user)) return next();
-    if (!isAdmin(user)) {
-      throw new ApiError(403, "No tienes permisos administrativos", true, "FORBIDDEN");
-    }
-
-    const userConcessionId = getUserConcessionId(user);
-    if (!userConcessionId) {
-      throw new ApiError(403, "Usuario sin concesión asignada", true, "FORBIDDEN");
-    }
-
-    const targetConcessionId =
-      (req.query.concesion_id as string | undefined) ||
-      (req.body?.concesionId as string | undefined) ||
-      (req.body?.concesion_id as string | undefined) ||
-      userConcessionId;
-
-    if (targetConcessionId) {
-      if (targetConcessionId !== userConcessionId) {
-        throw new ApiError(403, "Solo puedes administrar tu propia concesión", true, "FORBIDDEN");
-      }
-      return next();
-    }
-
-    const sucursalId = req.params.id;
-    if (!sucursalId) {
-      throw new ApiError(400, "ID de sucursal no proporcionado", true, "BAD_REQUEST");
-    }
-    const concesionId = await getSucursalConcessionId(sucursalId);
-    if (concesionId !== userConcessionId) {
-      throw new ApiError(403, "Solo puedes administrar tu propia concesión", true, "FORBIDDEN");
+    if (!isSuperAdmin(user)) {
+      throw new ApiError(
+        403,
+        "Solo SUPERADMIN puede administrar sucursales y cajas",
+        true,
+        "FORBIDDEN",
+      );
     }
     next();
   },
@@ -298,7 +276,7 @@ export const requireProductWriteAccess = asyncHandler(
 );
 
 // ---------------------------------------------------------------------------
-// Inventarios — SUPERADMIN solo lectura; ADMIN escribe; VENDEDOR lectura por concesión
+// Inventarios — SUPERADMIN escribe; ADMIN y VENDEDOR solo lectura por concesión
 // ---------------------------------------------------------------------------
 
 export const requireInventarioReadAccess = asyncHandler(
@@ -322,41 +300,13 @@ export const requireInventarioReadAccess = asyncHandler(
 export const requireInventarioWriteAccess = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
     const user = validateUser(req);
-
-    if (isSuperAdmin(user)) {
+    if (!isSuperAdmin(user)) {
       throw new ApiError(
         403,
-        "SUPERADMIN tiene acceso de solo lectura a inventarios",
+        "Solo SUPERADMIN puede modificar inventarios",
         true,
         "FORBIDDEN",
       );
-    }
-    if (!isAdmin(user)) {
-      throw new ApiError(403, "No tienes permisos para modificar inventarios", true, "FORBIDDEN");
-    }
-
-    const userConcessionId = getUserConcessionId(user);
-    if (!userConcessionId) {
-      throw new ApiError(403, "Usuario sin concesión asignada", true, "FORBIDDEN");
-    }
-
-    const sucursalId = req.params.sucursalId;
-    if (sucursalId) {
-      const concesionId = await getSucursalConcessionId(sucursalId);
-      if (concesionId !== userConcessionId) {
-        throw new ApiError(403, "Solo puedes administrar inventarios de tu concesión", true, "FORBIDDEN");
-      }
-      return next();
-    }
-
-    const inventarioId = req.params.id;
-    if (!inventarioId) {
-      // POST /inventarios/jornada-activa — concesión del perfil
-      return next();
-    }
-    const concesionId = await getInventarioConcessionId(inventarioId);
-    if (concesionId !== userConcessionId) {
-      throw new ApiError(403, "Solo puedes administrar inventarios de tu concesión", true, "FORBIDDEN");
     }
     next();
   },
@@ -383,6 +333,16 @@ export const requireDetalleVentaCreateAccess = asyncHandler(
       throw new ApiError(
         400,
         "Los parámetros de la venta no coinciden con el inventario",
+        true,
+        "BAD_REQUEST",
+      );
+    }
+
+    const invSucursalId = await getInventarioSucursalId(inventarioId);
+    if (invSucursalId && invSucursalId !== sucursalId) {
+      throw new ApiError(
+        400,
+        "El inventario no pertenece a la sucursal indicada",
         true,
         "BAD_REQUEST",
       );
