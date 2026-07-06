@@ -19,6 +19,7 @@ import usersRoutes from "./users.routes";
 import detalleVentaRoutes from "./detalle-venta.routes";
 import combosRoutes from "./combos.routes";
 import descuentosRoutes from "./descuentos.routes";
+import trabajadoresClubRoutes from "./trabajadores-club.routes";
 
 const router = Router();
 
@@ -46,5 +47,6 @@ router.use("/users", usersRoutes);
 router.use("/detalle-venta", detalleVentaRoutes);
 router.use("/combos", combosRoutes);
 router.use("/descuentos", descuentosRoutes);
+router.use("/trabajadores-club", trabajadoresClubRoutes);
 
 export default router;

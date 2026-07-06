@@ -4,6 +4,7 @@
 
 # Node.js dependencies
 node_modules/
+*.json
 
 # Logs
 npm-debug.log
