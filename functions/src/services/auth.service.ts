@@ -6,13 +6,18 @@ import {
   hasAppOficialCredentials,
   USUARIOS_APP_COLLECTION,
 } from "../config/app.firebase";
+import { firestorePos } from "../config/firebase";
+import { COLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import {
   isPosEligibleUser,
+  toConcesionRole,
   toInternalRole,
 } from "../utils/concesion-roles";
+import { getConcessionNombre } from "./concession.service";
 
 const usuariosCol = () => firestoreApp.collection(USUARIOS_APP_COLLECTION);
+const legacyUsersCol = () => firestorePos.collection(COLLECTIONS.USERS);
 
 const getFirebaseApiKey = (): string => {
   const key =
@@ -91,6 +96,95 @@ export const findUsuariosAppProfile = async (
   return null;
 };
 
+type LegacyPosUser = Record<string, unknown> & { id: string };
+
+const isLegacyPosRole = (rol?: string | null): boolean =>
+  Boolean(toInternalRole(rol));
+
+/** Usuario POS legado en Firestore `users` (puntoventacl), sin migrar a usuariosApp. */
+export const findLegacyPosUserByEmail = async (
+  email: string,
+): Promise<LegacyPosUser | null> => {
+  const normalized = email.toLowerCase().trim();
+  if (!normalized) return null;
+
+  const snap = await legacyUsersCol()
+    .where("email", "==", normalized)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+
+  const doc = snap.docs[0];
+  const data = doc.data();
+  if (data.activo === false || !isLegacyPosRole(data.rol as string | undefined)) {
+    return null;
+  }
+
+  return { id: doc.id, ...data };
+};
+
+const legacyPosUserToAppProfile = (
+  legacy: LegacyPosUser,
+  uid: string,
+  email: string,
+): UsuariosAppProfile => {
+  const resolvedEmail = String(legacy.email ?? email).toLowerCase().trim();
+  return {
+    id: uid,
+    uid,
+    email: resolvedEmail,
+    nombre: String(legacy.nombre ?? resolvedEmail),
+    rol: toConcesionRole(String(legacy.rol ?? "VENDEDOR")),
+    activo: legacy.activo !== false,
+    from_concesion: true,
+    concesionId:
+      (legacy.concesionId as string | null | undefined) ??
+      (legacy.idConcesion as string | null | undefined) ??
+      null,
+    sucursalId:
+      (legacy.sucursalId as string | null | undefined) ??
+      (legacy.idSucursal as string | null | undefined) ??
+      null,
+    cajaId: (legacy.cajaId as string | null | undefined) ?? null,
+    fecha_nacimiento:
+      (legacy.fecha_nacimiento as string | undefined) ??
+      (typeof legacy.fechaNacimiento === "string"
+        ? legacy.fechaNacimiento
+        : undefined),
+  };
+};
+
+/**
+ * Resuelve el perfil POS: usuariosApp con rol de concesión, o fallback a `users`
+ * legado si el email ya existía como CLIENTE en la app oficial (sin migración).
+ */
+export const resolvePosProfile = async (
+  uid: string,
+  email?: string,
+): Promise<UsuariosAppProfile> => {
+  const appProfile = await findUsuariosAppProfile(uid, email);
+  if (appProfile && isPosEligibleUser(appProfile)) {
+    return appProfile;
+  }
+
+  const lookupEmail = (email ?? appProfile?.email)?.toLowerCase().trim();
+  if (lookupEmail) {
+    const legacy = await findLegacyPosUserByEmail(lookupEmail);
+    if (legacy) {
+      return legacyPosUserToAppProfile(legacy, uid, lookupEmail);
+    }
+  }
+
+  assertPosAccess(appProfile);
+  throw new ApiError(
+    403,
+    "No tienes acceso al punto de venta de concesiones",
+    true,
+    "FORBIDDEN",
+  );
+};
+
 /** Perfil expuesto al POS (rol interno + campos de concesión). */
 export const toPosUsuario = (profile: UsuariosAppProfile) => {
   const internalRol = toInternalRole(profile.rol);
@@ -116,6 +210,46 @@ export const toPosUsuario = (profile: UsuariosAppProfile) => {
     admin: false,
     isAdmin: false,
   };
+};
+
+/** Resuelve concesionId directo o vía sucursal asignada al vendedor. */
+const resolveConcesionIdForNombre = async (params: {
+  concesionId?: string | null;
+  sucursalId?: string | null;
+}): Promise<string | null> => {
+  const direct = params.concesionId?.trim();
+  if (direct) return direct;
+
+  const sucursalId = params.sucursalId?.trim();
+  if (!sucursalId) return null;
+
+  try {
+    const doc = await firestorePos
+      .collection(COLLECTIONS.SUCURSALES)
+      .doc(sucursalId)
+      .get();
+    if (!doc.exists) return null;
+    const data = doc.data() ?? {};
+    const fromSucursal =
+      (data.concesion_id as string | undefined) ??
+      (data.concesionId as string | undefined);
+    return typeof fromSucursal === "string" && fromSucursal.trim()
+      ? fromSucursal.trim()
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Enriquecer el perfil POS con el nombre de la concesión (para mostrar en el POS). */
+export const withConcesionNombre = async <
+  T extends { concesionId?: string | null; sucursalId?: string | null },
+>(
+  usuario: T,
+): Promise<T & { concesionNombre: string | null }> => {
+  const concesionId = await resolveConcesionIdForNombre(usuario);
+  const concesionNombre = await getConcessionNombre(concesionId);
+  return { ...usuario, concesionNombre };
 };
 
 export const assertPosAccess = (profile: UsuariosAppProfile | null) => {
@@ -172,7 +306,8 @@ export const verifyPosJwt = (token: string): { uid: string; email?: string; rol?
 
 /**
  * Login con email/password vía Identity Toolkit de app-oficial-leon.
- * Solo permite usuarios from_concesion con rol CONCESION_*.
+ * Acepta usuariosApp con rol CONCESION_* o, si el email es POS legado,
+ * hace fallback a la colección `users` sin migrar el documento.
  */
 export const loginWithPassword = async (email: string, password: string) => {
   if (!hasAppOficialCredentials && process.env.NODE_ENV !== "production") {
@@ -201,27 +336,25 @@ export const loginWithPassword = async (email: string, password: string) => {
     );
   }
 
-  const profile = await findUsuariosAppProfile(uid, resolvedEmail);
-  assertPosAccess(profile);
+  const profile = await resolvePosProfile(uid, resolvedEmail);
 
   // Sincronizar claims (admin siempre false para concesiones)
   try {
     await authAppOficial.setCustomUserClaims(uid, {
       admin: false,
-      rol: profile!.rol,
+      rol: profile.rol,
     });
   } catch {
     // No bloquear login si fallan claims
   }
 
-  const token = signPosJwt(profile!);
-  return { token, usuario: toPosUsuario(profile!) };
+  const token = signPosJwt(profile);
+  return { token, usuario: await withConcesionNombre(toPosUsuario(profile)) };
 };
 
 /** Carga el perfil POS a partir de un JWT válido. */
 export const resolveSessionFromToken = async (token: string) => {
   const decoded = verifyPosJwt(token);
-  const profile = await findUsuariosAppProfile(decoded.uid, decoded.email);
-  assertPosAccess(profile);
-  return toPosUsuario(profile!);
+  const profile = await resolvePosProfile(decoded.uid, decoded.email);
+  return toPosUsuario(profile);
 };

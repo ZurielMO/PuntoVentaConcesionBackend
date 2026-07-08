@@ -28,10 +28,24 @@ const CONCESION_TO_INTERNAL: Record<string, UserRole> = {
   ADMIN: UserRole.ADMIN,
   VENDEDOR: UserRole.VENDEDOR,
   EMPLEADO: UserRole.VENDEDOR,
+  // Typo histórico (falta la "N" en CONCESION)
+  CONCESIO_VENDEDOR: UserRole.VENDEDOR,
+  CONCESIO_ADMIN: UserRole.ADMIN,
+  CONCESIO_SUPERADMIN: UserRole.SUPERADMIN,
 };
 
-export const isConcesionRole = (rol?: string | null): boolean =>
-  Boolean(rol && CONCESION_ROLE_SET.has(String(rol).toUpperCase()));
+/** Variantes de rol (typos, legados) que se normalizan al rol canónico CONCESION_*. */
+const CONCESION_ROLE_ALIASES: Record<string, ConcesionRole> = {
+  CONCESIO_VENDEDOR: CONCESION_ROLES.VENDEDOR,
+  CONCESIO_ADMIN: CONCESION_ROLES.ADMIN,
+  CONCESIO_SUPERADMIN: CONCESION_ROLES.SUPERADMIN,
+};
+
+export const isConcesionRole = (rol?: string | null): boolean => {
+  if (!rol) return false;
+  const upper = String(rol).toUpperCase();
+  return CONCESION_ROLE_SET.has(upper) || upper in CONCESION_ROLE_ALIASES;
+};
 
 /**
  * Normaliza cualquier rol (CONCESION_* o legado) al rol interno del POS.

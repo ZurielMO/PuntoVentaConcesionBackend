@@ -194,4 +194,6 @@ export interface Corte extends BaseEntity {
     estatus: string;
     totalReal: number;
     totalCaja: number;
+    totalEfectivo?: number | null;
+    totalTarjeta?: number | null;
 }

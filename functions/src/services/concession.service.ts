@@ -27,6 +27,36 @@ export const getConcessionById = async (id: string) => {
   return toData(doc);
 };
 
+/**
+ * Resuelve solo el nombre de una concesión sin exigir superadmin ni lanzar.
+ * Pensado para enriquecer el perfil POS (auth/me, login) del vendedor.
+ */
+export const getConcessionNombre = async (
+  id?: string | null,
+): Promise<string | null> => {
+  if (!id) return null;
+  try {
+    const doc = await col().doc(id).get();
+    if (!doc.exists) return null;
+    const data = doc.data() ?? {};
+    // El modelo actual usa `nombre`; se aceptan alias legados por robustez.
+    const candidates = [
+      data.nombre,
+      data.nombreComercial,
+      data.razonSocial,
+      data.name,
+    ];
+    for (const value of candidates) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
 export const createConcession = async (
   data: { nombre: string; activo?: boolean; imagenes?: string[] },
   idUser?: string,

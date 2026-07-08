@@ -13,12 +13,20 @@ import {
   createDetalleVentaSchema,
   updateDetalleVentaSchema,
 } from "../middleware/validators/detalle-venta.validator";
+import { assignVentaPointsSchema } from "../middleware/validators/loyalty.validator";
+import * as loyaltyCommand from "../controllers/loyalty/loyalty.command.controller";
 
 const router = Router();
 
 router.use(authMiddleware);
 
 router.get("/", requireAuthenticated, q.getDetalleVentas);
+router.post(
+  "/ventas/:ventaId/asignar-puntos",
+  requireAuthenticated,
+  validateBody(assignVentaPointsSchema),
+  loyaltyCommand.assignVentaPoints,
+);
 router.post(
   "/ventas/:ventaId/concesiones/:concesionId/sucursales/:sucursalId/inventarios/:inventarioId",
   requireDetalleVentaCreateAccess,

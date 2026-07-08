@@ -17,6 +17,10 @@ export const createDetalleVenta = asyncHandler(
       inventarioId,
       idUser: req.user.uid,
       productos: req.body.productos,
+      metodoPago: req.body.metodoPago,
+      puntosUsados: req.body.puntosUsados,
+      memberId: req.body.memberId,
+      abonado: req.body.abonado,
     });
     res.status(201).json({ success: true, data, message: "Comprobante creado" });
   },

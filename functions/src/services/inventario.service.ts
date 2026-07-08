@@ -1,9 +1,13 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { firestorePos } from "../config/firebase";
+import { isAppOficial2Configured } from "../config/firebase.appoficial2";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import { InventarioMovimientoTipo } from "../models";
-import { resolveJornadaPrimaria } from "./jornada.service";
+import {
+  JornadaActivaValue,
+  resolveJornadaPrimaria,
+} from "./jornada.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 
@@ -145,10 +149,68 @@ export const getOrCreateInventarioJornadaActiva = async (
   };
 };
 
+const inventarioDocTimestamp = (
+  data: FirebaseFirestore.DocumentData,
+): number => {
+  const updated = data.updatedAt?.toMillis?.() ?? 0;
+  const created = data.createdAt?.toMillis?.() ?? 0;
+  return Math.max(updated, created);
+};
+
+/** Fallback local cuando no hay credenciales de acreditaciones-b904f (RTDB). */
+const getInventarioJornadaActivaFromFirestore = async (
+  sucursalId: string,
+  includeProductos: boolean,
+): Promise<{
+  inventario: Record<string, unknown> | null;
+  jornada: JornadaActivaValue | null;
+}> => {
+  const snap = await col()
+    .where("sucursal_id", "==", sucursalId)
+    .where("activo", "==", true)
+    .get();
+
+  if (snap.empty) {
+    return { inventario: null, jornada: null };
+  }
+
+  const doc = snap.docs.sort(
+    (a, b) =>
+      inventarioDocTimestamp(b.data()) - inventarioDocTimestamp(a.data()),
+  )[0];
+  const data = doc.data();
+  const jornada: JornadaActivaValue = {
+    activo: true,
+    jornada: data.jornada_numero,
+    fecha: data.jornada_fecha,
+  };
+
+  const inventario = toData(doc);
+  if (!includeProductos) {
+    return { inventario, jornada };
+  }
+
+  const prodSnap = await productosCol(doc.id).get();
+  return {
+    inventario: {
+      ...inventario,
+      productos: prodSnap.docs.map(toData),
+    },
+    jornada,
+  };
+};
+
 export const getInventarioJornadaActiva = async (
   sucursalId: string,
   includeProductos = true,
 ) => {
+  if (!isAppOficial2Configured()) {
+    return getInventarioJornadaActivaFromFirestore(
+      sucursalId,
+      includeProductos,
+    );
+  }
+
   const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
   const id = buildInventarioId(fecha, jornadaNumero, sucursalId);
   const doc = await col().doc(id).get();
