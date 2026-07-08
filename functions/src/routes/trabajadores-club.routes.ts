@@ -16,9 +16,10 @@ router.use(requireSuperAdmin);
 
 router.get("/search", q.searchTrabajadorCandidate);
 router.get("/", q.listTrabajadoresClub);
+router.get("/:uid/cortesias", q.listCortesiasTrabajador);
 router.post("/", validateBody(addTrabajadorClubSchema), c.addTrabajadorClub);
 router.patch(
-  "/:uid",
+  "/:uid/cortesias/:cortesiaId",
   validateBody(updateCortesiaSchema),
   c.updateCortesiaCanjeada,
 );
