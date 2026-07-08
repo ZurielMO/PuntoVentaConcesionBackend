@@ -7,6 +7,7 @@ import { authMiddleware } from "../utils/middlewares";
 import {
   createCorteSchema,
   updateCorteSchema,
+  cerrarCorteSchema,
 } from "../middleware/validators/corte.validator";
 import {
   requireAuthenticated,
@@ -19,6 +20,13 @@ const router = Router();
 
 router.use(authMiddleware);
 
+router.get("/resumen", requireAuthenticated, q.getCorteResumen);
+router.post(
+  "/cerrar",
+  requireCorteCreateAccess,
+  validateBody(cerrarCorteSchema),
+  c.cerrarCorte,
+);
 router.get("/", requireAuthenticated, q.getCortes);
 router.post("/", requireCorteCreateAccess, validateBody(createCorteSchema), c.createCorte);
 router.get("/:id", requireCorteAccess, q.getCorteById);

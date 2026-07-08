@@ -4,6 +4,7 @@
  */
 
 import { Request, Response, NextFunction } from "express";
+import { AppOficial2Error } from "../config/firebase.appoficial2";
 import { ApiError } from "./api-error";
 import { buildPublicErrorBody, logSafeError } from "./public-error.util";
 
@@ -21,6 +22,15 @@ export const errorHandler = (
 ) => {
   if (res.headersSent) {
     return next(err);
+  }
+
+  if (err instanceof AppOficial2Error) {
+    err = new ApiError(
+      503,
+      "El servicio de jornadas no está disponible. Contacta al administrador.",
+      true,
+      "JORNADA_SERVICE_UNAVAILABLE",
+    );
   }
 
   logSafeError("errorHandler", err, req.requestId);

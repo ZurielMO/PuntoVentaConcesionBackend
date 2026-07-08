@@ -8,6 +8,16 @@ import {
   resolveCajaActivaParaVendedor,
 } from "./asignacion-caja.service";
 import { getUserById } from "./user.service";
+import { getComboById } from "./combo.service";
+import {
+  calcularCanjePuntos,
+  calcularMontoDesdePuntos,
+  cancelRedemptionHold,
+  confirmRedemptionHold,
+  createRedemptionHold,
+  getClubMember,
+} from "./loyalty-points.service";
+import type { ComboProducto } from "../models";
 
 const col = () => firestorePos.collection(COLLECTIONS.COMPROBANTES_VENTA);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -19,9 +29,18 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown
 });
 
 interface DetalleProductoInput {
-  producto: string;
+  producto?: string;
+  combo?: string;
   cantidad: number;
   precio_actual?: number;
+}
+
+export interface AbonadoVentaInput {
+  benefitId: string;
+  titulo: string;
+  montoTotal: number;
+  montoDescuento: number;
+  unidadesGratis: number;
 }
 
 interface ResolvedLinea {
@@ -34,19 +53,62 @@ interface ResolvedLinea {
 const computeTotal = (lineas: { subtotal: number }[]) =>
   Math.round(lineas.reduce((acc, l) => acc + l.subtotal, 0) * 100) / 100;
 
-const resolvePrecio = (
+/** Agrupa líneas por producto (combo + productos sueltos pueden repetir el mismo id). */
+export const mergeResolvedLineas = (lineas: ResolvedLinea[]): ResolvedLinea[] => {
+  const byProduct = new Map<string, ResolvedLinea>();
+
+  for (const linea of lineas) {
+    const existing = byProduct.get(linea.producto);
+    if (!existing) {
+      byProduct.set(linea.producto, { ...linea });
+      continue;
+    }
+
+    const cantidad = existing.cantidad + linea.cantidad;
+    const subtotal =
+      Math.round((existing.subtotal + linea.subtotal) * 100) / 100;
+    const precio_actual =
+      cantidad > 0 ? Math.round((subtotal / cantidad) * 100) / 100 : 0;
+
+    byProduct.set(linea.producto, {
+      producto: linea.producto,
+      cantidad,
+      precio_actual,
+      subtotal,
+    });
+  }
+
+  return Array.from(byProduct.values());
+};
+
+const unwrapTransactionError = (error: unknown): never => {
+  if (error instanceof ApiError) {
+    throw error;
+  }
+
+  const nested = (error as { cause?: unknown })?.cause;
+  if (nested instanceof ApiError) {
+    throw nested;
+  }
+
+  throw error;
+};
+
+/** @internal exported for unit tests */
+export const resolvePrecio = (
   inputPrice: number | undefined,
   invProducto: FirebaseFirestore.DocumentData | undefined,
   catalogProduct: FirebaseFirestore.DocumentData | undefined,
 ): number => {
+  // POS envía precio_actual al cobrar (incluye descuentos abonado); tiene prioridad.
+  if (inputPrice != null && !Number.isNaN(Number(inputPrice))) {
+    return Number(inputPrice);
+  }
   if (invProducto?.precio_jornada != null) {
     return Number(invProducto.precio_jornada);
   }
   if (catalogProduct?.precio != null) {
     return Number(catalogProduct.precio);
-  }
-  if (inputPrice != null) {
-    return Number(inputPrice);
   }
   throw new ApiError(
     400,
@@ -56,6 +118,96 @@ const resolvePrecio = (
   );
 };
 
+const expandComboToLineas = async (
+  comboId: string,
+  cantidad: number,
+  inputPrice?: number,
+): Promise<ResolvedLinea[]> => {
+  const combo = await getComboById(comboId);
+  const comboData = combo as {
+    activo?: boolean;
+    precio?: number;
+    productos?: ComboProducto[];
+  };
+
+  if (comboData.activo === false) {
+    throw new ApiError(400, "El combo no está activo", true, "INVALID_COMBO");
+  }
+
+  const componentes = comboData.productos ?? [];
+  if (componentes.length === 0) {
+    throw new ApiError(400, "El combo no tiene productos", true, "INVALID_COMBO");
+  }
+
+  const unitPrice =
+    inputPrice != null ? Number(inputPrice) : Number(comboData.precio ?? 0);
+  if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+    throw new ApiError(
+      400,
+      "No se pudo determinar el precio del combo",
+      true,
+      "INVALID_PRICE",
+    );
+  }
+
+  const comboTotal = Math.round(unitPrice * cantidad * 100) / 100;
+  const expanded = componentes.map((componente) => {
+    const productoId = componente.producto_id?.trim();
+    if (!productoId) {
+      throw new ApiError(
+        400,
+        "El combo tiene un componente sin producto",
+        true,
+        "INVALID_COMBO",
+      );
+    }
+    return {
+      producto: productoId,
+      cantidad: componente.cantidad * cantidad,
+    };
+  });
+
+  const weighted = await Promise.all(
+    expanded.map(async (linea) => {
+      const catalogDoc = await productsCol().doc(linea.producto).get();
+      const catalogPrice = Number(catalogDoc.data()?.precio ?? 1);
+      const weight = catalogPrice * linea.cantidad;
+      return { ...linea, weight };
+    }),
+  );
+
+  const totalWeight = weighted.reduce((acc, linea) => acc + linea.weight, 0);
+  const lineas: ResolvedLinea[] = [];
+  let assigned = 0;
+
+  weighted.forEach((linea, index) => {
+    let subtotal: number;
+    if (index === weighted.length - 1) {
+      subtotal = Math.round((comboTotal - assigned) * 100) / 100;
+    } else if (totalWeight > 0) {
+      subtotal = Math.round(comboTotal * (linea.weight / totalWeight) * 100) / 100;
+      assigned += subtotal;
+    } else {
+      subtotal = Math.round((comboTotal / weighted.length) * 100) / 100;
+      assigned += subtotal;
+    }
+
+    const precioActual =
+      linea.cantidad > 0
+        ? Math.round((subtotal / linea.cantidad) * 100) / 100
+        : 0;
+
+    lineas.push({
+      producto: linea.producto,
+      cantidad: linea.cantidad,
+      precio_actual: precioActual,
+      subtotal,
+    });
+  });
+
+  return lineas;
+};
+
 const resolveLineas = async (
   inventarioId: string,
   productos: DetalleProductoInput[],
@@ -63,6 +215,25 @@ const resolveLineas = async (
   const lineas: ResolvedLinea[] = [];
 
   for (const item of productos) {
+    if (item.combo) {
+      const expanded = await expandComboToLineas(
+        item.combo,
+        item.cantidad,
+        item.precio_actual,
+      );
+      lineas.push(...expanded);
+      continue;
+    }
+
+    if (!item.producto) {
+      throw new ApiError(
+        400,
+        "Cada línea debe incluir producto o combo",
+        true,
+        "INVALID_LINE",
+      );
+    }
+
     const invProdDoc = await inventariosCol()
       .doc(inventarioId)
       .collection(SUBCOLLECTIONS.PRODUCTOS)
@@ -131,6 +302,118 @@ const resolveCajaForVenta = async (params: {
   return { jornadaId, caja, cajeroNombre };
 };
 
+export type MetodoPago =
+  | "efectivo"
+  | "tarjeta"
+  | "puntos"
+  | "puntos+efectivo"
+  | "puntos+tarjeta";
+
+const roundMoney = (value: number) => Math.round(value * 100) / 100;
+
+const resolveMontosPago = (params: {
+  total: number;
+  metodoPago: MetodoPago;
+  puntosUsados: number;
+  montoPuntos: number;
+}): { montoEfectivo: number; montoTarjeta: number; montoPuntos: number } => {
+  const { total, metodoPago, puntosUsados, montoPuntos } = params;
+
+  if (puntosUsados <= 0) {
+    if (metodoPago === "tarjeta") {
+      return { montoEfectivo: 0, montoTarjeta: total, montoPuntos: 0 };
+    }
+    return { montoEfectivo: total, montoTarjeta: 0, montoPuntos: 0 };
+  }
+
+  const restante = roundMoney(Math.max(0, total - montoPuntos));
+  if (metodoPago === "puntos+tarjeta") {
+    return { montoEfectivo: 0, montoTarjeta: restante, montoPuntos };
+  }
+  if (metodoPago === "puntos") {
+    return { montoEfectivo: 0, montoTarjeta: 0, montoPuntos };
+  }
+  return { montoEfectivo: restante, montoTarjeta: 0, montoPuntos };
+};
+
+const validatePagoConPuntos = async (params: {
+  total: number;
+  metodoPago: MetodoPago;
+  puntosUsados: number;
+  memberId?: string;
+}): Promise<{ montoPuntos: number; memberId: string }> => {
+  const { total, metodoPago, puntosUsados, memberId } = params;
+
+  if (puntosUsados <= 0 && !metodoPago.startsWith("puntos")) {
+    return { montoPuntos: 0, memberId: memberId?.trim() ?? "" };
+  }
+
+  const trimmedMemberId = memberId?.trim();
+  if (!trimmedMemberId) {
+    throw new ApiError(
+      400,
+      "Se requiere socio para pagar con puntos",
+      true,
+      "MEMBER_REQUIRED",
+    );
+  }
+
+  const member = await getClubMember(trimmedMemberId);
+  const canje = calcularCanjePuntos({
+    total,
+    puntosDisponibles: member.puntosActuales,
+    puntosSolicitados: puntosUsados,
+  });
+
+  if (canje.puntosUsados !== puntosUsados) {
+    throw new ApiError(
+      400,
+      "Cantidad de puntos inválida para este total",
+      true,
+      "INVALID_POINTS",
+    );
+  }
+
+  if (canje.puntosUsados <= 0) {
+    throw new ApiError(
+      400,
+      "El socio no tiene puntos suficientes",
+      true,
+      "INSUFFICIENT_POINTS",
+    );
+  }
+
+  const expectedMontoPuntos = calcularMontoDesdePuntos(canje.puntosUsados);
+  if (metodoPago === "puntos" && canje.restante > 0) {
+    throw new ApiError(
+      400,
+      "Los puntos no cubren el total de la venta",
+      true,
+      "INSUFFICIENT_POINTS",
+    );
+  }
+
+  if (metodoPago.startsWith("puntos") && metodoPago !== "puntos" && canje.restante <= 0) {
+    throw new ApiError(
+      400,
+      "El método de pago del remanente no aplica",
+      true,
+      "INVALID_PAYMENT_METHOD",
+    );
+  }
+
+  if (!metodoPago.startsWith("puntos")) {
+    throw new ApiError(
+      400,
+      "metodoPago inconsistente con puntosUsados",
+      true,
+      "INVALID_PAYMENT_METHOD",
+    );
+  }
+
+  return { montoPuntos: expectedMontoPuntos, memberId: trimmedMemberId };
+};
+
 export const createDetalleVenta = async (params: {
   ventaId: string;
   concesionId: string;
@@ -138,6 +421,10 @@ export const createDetalleVenta = async (params: {
   inventarioId: string;
   idUser?: string;
   productos: DetalleProductoInput[];
+  metodoPago?: MetodoPago;
+  puntosUsados?: number;
+  memberId?: string;
+  abonado?: AbonadoVentaInput;
 }) => {
   if (!params.idUser) {
     throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
@@ -149,90 +436,224 @@ export const createDetalleVenta = async (params: {
     inventarioId: params.inventarioId,
   });
 
-  const lineas = await resolveLineas(params.inventarioId, params.productos);
+  const lineas = mergeResolvedLineas(
+    await resolveLineas(params.inventarioId, params.productos),
+  );
   const total = computeTotal(lineas);
+  const metodoPago = params.metodoPago ?? "efectivo";
+  const puntosUsados = Math.max(0, Math.trunc(params.puntosUsados ?? 0));
+
+  const pagoPuntos = await validatePagoConPuntos({
+    total,
+    metodoPago,
+    puntosUsados,
+    memberId: params.memberId,
+  });
+  const montos = resolveMontosPago({
+    total,
+    metodoPago,
+    puntosUsados,
+    montoPuntos: pagoPuntos.montoPuntos,
+  });
 
   const comprobanteRef = col().doc();
   const inventarioRef = inventariosCol().doc(params.inventarioId);
 
-  await firestorePos.runTransaction(async (tx) => {
-    const invDoc = await tx.get(inventarioRef);
-    if (!invDoc.exists || invDoc.data()?.activo === false) {
-      throw new ApiError(404, "Inventario no encontrado", true, "NOT_FOUND");
-    }
+  let redemptionHold:
+    | {
+        redemptionId: string;
+        memberId: string;
+        puntosCanjeados: number;
+        descripcion: string;
+      }
+    | null = null;
 
-    for (const linea of lineas) {
-      const prodRef = inventarioRef.collection(SUBCOLLECTIONS.PRODUCTOS).doc(linea.producto);
-      const prodDoc = await tx.get(prodRef);
-      if (!prodDoc.exists) {
-        throw new ApiError(
-          400,
-          `Producto ${linea.producto} no está en el inventario`,
-          true,
-          "PRODUCT_NOT_IN_INVENTORY",
-        );
+  if (puntosUsados > 0 && pagoPuntos.memberId) {
+    redemptionHold = await createRedemptionHold({
+      memberId: pagoPuntos.memberId,
+      puntos: puntosUsados,
+      ventaId: params.ventaId,
+    });
+  }
+
+  try {
+    await firestorePos.runTransaction(async (tx) => {
+      const invDoc = await tx.get(inventarioRef);
+      if (!invDoc.exists || invDoc.data()?.activo === false) {
+        throw new ApiError(404, "Inventario no encontrado", true, "NOT_FOUND");
       }
 
-      const data = prodDoc.data() ?? {};
-      const cantidadInicial = Number(data.cantidad_inicial ?? 0);
-      const cantidadFinal = Number(data.cantidad_final ?? cantidadInicial);
-      const disponible = cantidadFinal;
+      const prodRefs = new Map<string, FirebaseFirestore.DocumentReference>();
+      const stockByProduct = new Map<string, number>();
 
-      if (linea.cantidad > disponible) {
-        throw new ApiError(
-          409,
-          `Stock insuficiente para el producto ${linea.producto}`,
-          true,
-          "INSUFFICIENT_STOCK",
-        );
+      for (const linea of lineas) {
+        if (prodRefs.has(linea.producto)) {
+          continue;
+        }
+
+        const prodRef = inventarioRef
+          .collection(SUBCOLLECTIONS.PRODUCTOS)
+          .doc(linea.producto);
+        const prodDoc = await tx.get(prodRef);
+        if (!prodDoc.exists) {
+          throw new ApiError(
+            400,
+            `Producto ${linea.producto} no está en el inventario`,
+            true,
+            "PRODUCT_NOT_IN_INVENTORY",
+          );
+        }
+
+        const data = prodDoc.data() ?? {};
+        const cantidadInicial = Number(data.cantidad_inicial ?? 0);
+        const cantidadFinal = Number(data.cantidad_final ?? cantidadInicial);
+
+        prodRefs.set(linea.producto, prodRef);
+        stockByProduct.set(linea.producto, cantidadFinal);
       }
 
-      const nuevaCantidad = cantidadFinal - linea.cantidad;
+      for (const linea of lineas) {
+        const prodRef = prodRefs.get(linea.producto);
+        if (!prodRef) {
+          throw new ApiError(
+            400,
+            `Producto ${linea.producto} no está en el inventario`,
+            true,
+            "PRODUCT_NOT_IN_INVENTORY",
+          );
+        }
 
-      tx.set(
-        prodRef,
-        {
-          cantidad_final: nuevaCantidad,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
+        const cantidadFinal = stockByProduct.get(linea.producto) ?? 0;
+        if (linea.cantidad > cantidadFinal) {
+          throw new ApiError(
+            409,
+            `Stock insuficiente para el producto ${linea.producto}`,
+            true,
+            "INSUFFICIENT_STOCK",
+          );
+        }
 
-      logMovimientoInTransaction(tx, params.inventarioId, {
-        tipo: "VENTA",
-        producto_id: linea.producto,
-        cantidad: -linea.cantidad,
-        cantidad_anterior: cantidadFinal,
-        cantidad_nueva: nuevaCantidad,
-        sucursal_id: params.sucursalId,
+        const nuevaCantidad = cantidadFinal - linea.cantidad;
+        stockByProduct.set(linea.producto, nuevaCantidad);
+
+        tx.set(
+          prodRef,
+          {
+            cantidad_final: nuevaCantidad,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+
+        logMovimientoInTransaction(tx, params.inventarioId, {
+          tipo: "VENTA",
+          producto_id: linea.producto,
+          cantidad: -linea.cantidad,
+          cantidad_anterior: cantidadFinal,
+          cantidad_nueva: nuevaCantidad,
+          sucursal_id: params.sucursalId,
+          cajaId: caja.cajaId,
+          cajaNombre: caja.cajaNombre,
+          idUser: params.idUser ?? null,
+          ventaId: params.ventaId,
+        });
+      }
+
+      const lineasVenta = params.productos.map((item) => {
+        const linea: Record<string, unknown> = {
+          cantidad: item.cantidad,
+        };
+        if (item.combo) {
+          linea.combo = item.combo;
+        } else if (item.producto) {
+          linea.producto = item.producto;
+        }
+        if (item.precio_actual != null) {
+          linea.precio_actual = item.precio_actual;
+        }
+        return linea;
+      });
+
+      const abonadoPayload =
+        params.abonado && params.abonado.montoDescuento > 0
+          ? {
+              benefitId: params.abonado.benefitId,
+              titulo: params.abonado.titulo,
+              montoTotal: roundMoney(params.abonado.montoTotal),
+              montoDescuento: roundMoney(params.abonado.montoDescuento),
+              unidadesGratis: params.abonado.unidadesGratis,
+            }
+          : null;
+
+      tx.set(comprobanteRef, {
+        ventaId: params.ventaId,
+        concesionId: params.concesionId,
+        sucursalId: params.sucursalId,
+        inventarioId: params.inventarioId,
+        jornadaId,
         cajaId: caja.cajaId,
         cajaNombre: caja.cajaNombre,
         idUser: params.idUser ?? null,
+        cajeroNombre,
+        metodoPago,
+        total,
+        lineasVenta,
+        abonado: abonadoPayload,
+        puntosUsados: puntosUsados > 0 ? puntosUsados : null,
+        montoPuntos: montos.montoPuntos > 0 ? montos.montoPuntos : null,
+        montoEfectivo: montos.montoEfectivo > 0 ? montos.montoEfectivo : null,
+        montoTarjeta: montos.montoTarjeta > 0 ? montos.montoTarjeta : null,
+        memberId: pagoPuntos.memberId || null,
+        fecha: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      const detalleRef = comprobanteRef.collection(SUBCOLLECTIONS.DETALLE);
+      lineas.forEach((linea) => {
+        tx.set(detalleRef.doc(), linea);
+      });
+    });
+  } catch (error) {
+    if (redemptionHold) {
+      await cancelRedemptionHold({
+        redemptionId: redemptionHold.redemptionId,
         ventaId: params.ventaId,
       });
     }
+    unwrapTransactionError(error);
+  }
 
-    tx.set(comprobanteRef, {
-      ventaId: params.ventaId,
-      concesionId: params.concesionId,
-      sucursalId: params.sucursalId,
-      inventarioId: params.inventarioId,
-      jornadaId,
-      cajaId: caja.cajaId,
-      cajaNombre: caja.cajaNombre,
-      idUser: params.idUser ?? null,
-      cajeroNombre,
-      total,
-      fecha: FieldValue.serverTimestamp(),
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-
-    const detalleRef = comprobanteRef.collection(SUBCOLLECTIONS.DETALLE);
-    lineas.forEach((linea) => {
-      tx.set(detalleRef.doc(), linea);
-    });
-  });
+  if (redemptionHold) {
+    try {
+      await confirmRedemptionHold({
+        redemptionId: redemptionHold.redemptionId,
+        ventaId: params.ventaId,
+        memberId: redemptionHold.memberId,
+        puntosCanjeados: redemptionHold.puntosCanjeados,
+        descripcion: redemptionHold.descripcion,
+      });
+    } catch (error) {
+      await cancelRedemptionHold({
+        redemptionId: redemptionHold.redemptionId,
+        ventaId: params.ventaId,
+      });
+      if (error instanceof ApiError) {
+        throw new ApiError(
+          error.statusCode,
+          "Venta registrada pero no se pudieron canjear los puntos",
+          true,
+          "POINTS_REDEEM_FAILED",
+        );
+      }
+      throw new ApiError(
+        502,
+        "Venta registrada pero no se pudieron canjear los puntos",
+        true,
+        "POINTS_REDEEM_FAILED",
+      );
+    }
+  }
 
   return getDetalleVentaById(comprobanteRef.id);
 };
@@ -292,6 +713,28 @@ export const listDetalleVentas = async (filters: {
   return results;
 };
 
+/** Carga la subcolección detalle de cada comprobante (p. ej. para corte/resumen). */
+export const attachDetalleToComprobantes = async (
+  comprobantes: Array<Record<string, unknown> & { id: string }>,
+): Promise<Array<Record<string, unknown> & { id: string }>> => {
+  if (comprobantes.length === 0) {
+    return [];
+  }
+
+  return Promise.all(
+    comprobantes.map(async (comprobante) => {
+      const detalleSnap = await col()
+        .doc(comprobante.id)
+        .collection(SUBCOLLECTIONS.DETALLE)
+        .get();
+      return {
+        ...comprobante,
+        detalle: detalleSnap.docs.map(toData),
+      };
+    }),
+  );
+};
+
 export const updateDetalleVenta = async (
   id: string,
   productos: DetalleProductoInput[],
@@ -303,7 +746,7 @@ export const updateDetalleVenta = async (
   }
 
   const inventarioId = doc.data()?.inventarioId as string;
-  const lineas = await resolveLineas(inventarioId, productos);
+  const lineas = mergeResolvedLineas(await resolveLineas(inventarioId, productos));
   const total = computeTotal(lineas);
 
   const detalleRef = ref.collection(SUBCOLLECTIONS.DETALLE);

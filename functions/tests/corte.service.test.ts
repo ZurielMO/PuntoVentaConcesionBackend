@@ -1,0 +1,402 @@
+import {
+  aggregateTotalsByMetodoPago,
+  aggregateProductosFromVentas,
+  aggregatePromociones2x1FromVentas,
+  aggregateCombosFromVentas,
+  computeDiferenciaCaja,
+} from "../src/services/corte.service";
+
+describe("computeDiferenciaCaja", () => {
+  it("calcula sobrante cuando lo contado supera lo esperado", () => {
+    expect(computeDiferenciaCaja(120, 100)).toEqual({
+      efectivoContado: 120,
+      diferenciaCaja: 20,
+    });
+  });
+
+  it("calcula faltante cuando lo contado es menor a lo esperado", () => {
+    expect(computeDiferenciaCaja(90.5, 100)).toEqual({
+      efectivoContado: 90.5,
+      diferenciaCaja: -9.5,
+    });
+  });
+
+  it("diferencia exacta es 0", () => {
+    expect(computeDiferenciaCaja(100, 100)).toEqual({
+      efectivoContado: 100,
+      diferenciaCaja: 0,
+    });
+  });
+
+  it("devuelve nulos si no se ingresó efectivo contado", () => {
+    expect(computeDiferenciaCaja(undefined, 100)).toEqual({
+      efectivoContado: null,
+      diferenciaCaja: null,
+    });
+    expect(computeDiferenciaCaja(null, 100)).toEqual({
+      efectivoContado: null,
+      diferenciaCaja: null,
+    });
+  });
+});
+
+describe("aggregateTotalsByMetodoPago", () => {
+  it("agrupa totales por efectivo y tarjeta", () => {
+    expect(
+      aggregateTotalsByMetodoPago([
+        { total: 100, metodoPago: "efectivo" },
+        { total: 50, metodoPago: "tarjeta" },
+        { total: 25, metodoPago: "tarjeta" },
+      ]),
+    ).toEqual({
+      totalEfectivo: 100,
+      totalTarjeta: 75,
+      totalPuntosMonto: 0,
+      totalPuntosCanjeados: 0,
+      ventasConPuntos: 0,
+    });
+  });
+
+  it("trata ventas sin metodoPago como efectivo", () => {
+    expect(
+      aggregateTotalsByMetodoPago([
+        { total: 80 },
+        { total: 20, metodoPago: "efectivo" },
+      ]),
+    ).toEqual({
+      totalEfectivo: 100,
+      totalTarjeta: 0,
+      totalPuntosMonto: 0,
+      totalPuntosCanjeados: 0,
+      ventasConPuntos: 0,
+    });
+  });
+
+  it("agrupa ventas con puntos y remanente en efectivo o tarjeta", () => {
+    expect(
+      aggregateTotalsByMetodoPago([
+        {
+          total: 80,
+          metodoPago: "puntos",
+          puntosUsados: 800,
+          montoPuntos: 80,
+          montoEfectivo: 0,
+          montoTarjeta: 0,
+        },
+        {
+          total: 80,
+          metodoPago: "puntos+efectivo",
+          puntosUsados: 500,
+          montoPuntos: 50,
+          montoEfectivo: 30,
+          montoTarjeta: 0,
+        },
+        {
+          total: 100,
+          metodoPago: "puntos+tarjeta",
+          puntosUsados: 400,
+          montoPuntos: 40,
+          montoEfectivo: 0,
+          montoTarjeta: 60,
+        },
+      ]),
+    ).toEqual({
+      totalEfectivo: 30,
+      totalTarjeta: 60,
+      totalPuntosMonto: 170,
+      totalPuntosCanjeados: 1700,
+      ventasConPuntos: 3,
+    });
+  });
+
+  it("los puntos NO son dinero: total real = efectivo + tarjeta (sin puntos)", () => {
+    const ventas = [
+      { total: 210, metodoPago: "efectivo", montoEfectivo: 210 },
+      { total: 250, metodoPago: "tarjeta", montoTarjeta: 250 },
+      {
+        total: 50,
+        metodoPago: "puntos",
+        puntosUsados: 500,
+        montoPuntos: 50,
+        montoEfectivo: 0,
+        montoTarjeta: 0,
+      },
+    ];
+    const totals = aggregateTotalsByMetodoPago(ventas);
+
+    expect(totals).toEqual({
+      totalEfectivo: 210,
+      totalTarjeta: 250,
+      totalPuntosMonto: 50,
+      totalPuntosCanjeados: 500,
+      ventasConPuntos: 1,
+    });
+
+    // Dinero real recibido = efectivo + tarjeta. Los puntos quedan aparte.
+    const totalReal = totals.totalEfectivo + totals.totalTarjeta;
+    expect(totalReal).toBe(460);
+    // El monto en puntos es informativo y NO se suma al dinero real.
+    expect(totalReal).not.toBe(totalReal + totals.totalPuntosMonto);
+  });
+});
+
+describe("aggregateProductosFromVentas", () => {
+  it("usa lineasVenta y conserva el precio real de un 2x1 sin dividir", () => {
+    const productNames = new Map([["ice", "ICE Grande"]]);
+
+    // 2x1: la venta llega como 1 unidad a $80 (pagada) y 1 unidad a $0 (gratis).
+    // NO debe promediarse a $40.
+    expect(
+      aggregateProductosFromVentas(
+        [
+          {
+            total: 80,
+            lineasVenta: [
+              { producto: "ice", cantidad: 1, precio_actual: 80 },
+              { producto: "ice", cantidad: 1, precio_actual: 0 },
+            ],
+            detalle: [
+              // detalle fusionado (aplanado a 40): debe ignorarse porque hay lineasVenta.
+              { producto: "ice", cantidad: 2, precio_actual: 40, subtotal: 80 },
+            ],
+          },
+        ],
+        productNames,
+      ),
+    ).toEqual([
+      {
+        productoId: "ice",
+        nombre: "ICE Grande",
+        cantidad: 1,
+        subtotal: 80,
+        precioUnitario: 80,
+      },
+      {
+        productoId: "ice",
+        nombre: "ICE Grande",
+        cantidad: 1,
+        subtotal: 0,
+        precioUnitario: 0,
+      },
+    ]);
+  });
+
+  it("omite combos de lineasVenta (se cuentan aparte)", () => {
+    expect(
+      aggregateProductosFromVentas([
+        {
+          total: 100,
+          lineasVenta: [
+            { producto: "p1", cantidad: 1, precio_actual: 50 },
+            { combo: "c1", cantidad: 1, precio_actual: 50 },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        productoId: "p1",
+        nombre: "Producto",
+        cantidad: 1,
+        subtotal: 50,
+        precioUnitario: 50,
+      },
+    ]);
+  });
+
+  it("agrupa por producto+precio real sin promediar", () => {
+    const productNames = new Map([
+      ["p1", "Café"],
+      ["p2", "Pan"],
+    ]);
+
+    expect(
+      aggregateProductosFromVentas(
+        [
+          {
+            total: 150,
+            lineasVenta: [
+              { producto: "p1", cantidad: 2, precio_actual: 50 },
+              { producto: "p2", cantidad: 1, precio_actual: 50 },
+            ],
+          },
+          {
+            total: 130,
+            lineasVenta: [
+              { producto: "p1", cantidad: 2, precio_actual: 50 },
+              { producto: "p1", cantidad: 1, precio_actual: 80 },
+            ],
+          },
+        ],
+        productNames,
+      ),
+    ).toEqual([
+      {
+        productoId: "p1",
+        nombre: "Café",
+        cantidad: 4,
+        subtotal: 200,
+        precioUnitario: 50,
+      },
+      {
+        productoId: "p1",
+        nombre: "Café",
+        cantidad: 1,
+        subtotal: 80,
+        precioUnitario: 80,
+      },
+      {
+        productoId: "p2",
+        nombre: "Pan",
+        cantidad: 1,
+        subtotal: 50,
+        precioUnitario: 50,
+      },
+    ]);
+  });
+
+  it("usa detalle como respaldo para ventas históricas sin lineasVenta", () => {
+    const productNames = new Map([["p1", "Café"]]);
+
+    expect(
+      aggregateProductosFromVentas(
+        [
+          {
+            total: 100,
+            detalle: [
+              { producto: "p1", cantidad: 2, precio_actual: 50, subtotal: 100 },
+            ],
+          },
+        ],
+        productNames,
+      ),
+    ).toEqual([
+      {
+        productoId: "p1",
+        nombre: "Café",
+        cantidad: 2,
+        subtotal: 100,
+        precioUnitario: 50,
+      },
+    ]);
+  });
+
+  it("devuelve vacío si las ventas no traen detalle", () => {
+    expect(
+      aggregateProductosFromVentas([{ total: 100 }, { total: 50 }]),
+    ).toEqual([]);
+  });
+});
+
+describe("aggregatePromociones2x1FromVentas", () => {
+  it("suma montos y conteos de ventas con abonado 2x1", () => {
+    expect(
+      aggregatePromociones2x1FromVentas([
+        {
+          total: 80,
+          abonado: {
+            benefitId: "ice-2x1",
+            titulo: "ICE 2x1",
+            montoTotal: 80,
+            montoDescuento: 40,
+            unidadesGratis: 1,
+          },
+        },
+        {
+          total: 50,
+          abonado: {
+            benefitId: "ice-2x1",
+            titulo: "ICE 2x1",
+            montoTotal: 120,
+            montoDescuento: 40,
+            unidadesGratis: 1,
+          },
+        },
+        { total: 30 },
+      ]),
+    ).toEqual({
+      montoTotal: 200,
+      montoDescuento: 80,
+      unidadesGratis: 2,
+      cantidadTransacciones: 2,
+    });
+  });
+
+  it("ignora ventas sin descuento abonado", () => {
+    expect(
+      aggregatePromociones2x1FromVentas([
+        {
+          total: 80,
+          abonado: {
+            benefitId: "ice-2x1",
+            titulo: "ICE 2x1",
+            montoTotal: 80,
+            montoDescuento: 0,
+            unidadesGratis: 0,
+          },
+        },
+      ]),
+    ).toEqual({
+      montoTotal: 0,
+      montoDescuento: 0,
+      unidadesGratis: 0,
+      cantidadTransacciones: 0,
+    });
+  });
+});
+
+describe("aggregateCombosFromVentas", () => {
+  it("agrupa combos desde lineasVenta", () => {
+    const comboNames = new Map([
+      ["c1", "Combo Familiar"],
+      ["c2", "Combo Pareja"],
+    ]);
+
+    expect(
+      aggregateCombosFromVentas(
+        [
+          {
+            total: 200,
+            lineasVenta: [
+              { combo: "c1", cantidad: 2, precio_actual: 100 },
+              { producto: "p1", cantidad: 1, precio_actual: 50 },
+            ],
+          },
+          {
+            total: 80,
+            lineasVenta: [{ combo: "c2", cantidad: 1, precio_actual: 80 }],
+          },
+        ],
+        comboNames,
+      ),
+    ).toEqual({
+      montoTotal: 280,
+      cantidadVendidos: 3,
+      items: [
+        {
+          comboId: "c1",
+          nombre: "Combo Familiar",
+          cantidadVendidos: 2,
+          montoTotal: 200,
+        },
+        {
+          comboId: "c2",
+          nombre: "Combo Pareja",
+          cantidadVendidos: 1,
+          montoTotal: 80,
+        },
+      ],
+    });
+  });
+
+  it("devuelve vacío si no hay lineasVenta con combo", () => {
+    expect(
+      aggregateCombosFromVentas([
+        { total: 100, detalle: [{ producto: "p1", cantidad: 1, subtotal: 100 }] },
+      ]),
+    ).toEqual({
+      montoTotal: 0,
+      cantidadVendidos: 0,
+      items: [],
+    });
+  });
+});

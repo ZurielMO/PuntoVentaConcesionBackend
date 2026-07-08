@@ -27,5 +27,14 @@ export const loginWithPassword = asyncHandler(
 );
 
 export const me = asyncHandler(async (req: Request, res: Response) => {
-  res.status(200).json({ success: true, usuario: req.user });
+  const user = req.user as {
+    concesionId?: string | null;
+    sucursalId?: string | null;
+  };
+  const usuario = await authService.withConcesionNombre({
+    ...(req.user as Record<string, unknown>),
+    concesionId: user?.concesionId,
+    sucursalId: user?.sucursalId,
+  });
+  res.status(200).json({ success: true, usuario });
 });

@@ -7,6 +7,8 @@ export const createCorteSchema = z
     estatus: z.string().min(1),
     totalReal: z.number(),
     totalCaja: z.number(),
+    efectivoContado: z.number().nonnegative().optional(),
+    diferenciaCaja: z.number().optional(),
   })
   .strict();
 
@@ -23,5 +25,13 @@ export const updateCorteSchema = z
     message: "Debes enviar al menos un campo",
   });
 
+export const cerrarCorteSchema = z
+  .object({
+    comentarios: z.string().max(1000).optional(),
+    efectivoContado: z.number().nonnegative().optional(),
+  })
+  .strict();
+
 export type CreateCorteInput = z.infer<typeof createCorteSchema>;
 export type UpdateCorteInput = z.infer<typeof updateCorteSchema>;
+export type CerrarCorteInput = z.infer<typeof cerrarCorteSchema>;

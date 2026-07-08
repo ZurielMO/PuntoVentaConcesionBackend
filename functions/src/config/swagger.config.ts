@@ -39,6 +39,10 @@ import {
   createDetalleVentaSchema,
   updateDetalleVentaSchema,
 } from "../middleware/validators/detalle-venta.validator";
+import {
+  createComboSchema,
+  updateComboSchema,
+} from "../middleware/validators/combo.validator";
 
 const z2j: (schema: unknown) => any = (schema) =>
   zodToJsonSchema(schema as any, { target: "openApi3" });
@@ -85,6 +89,7 @@ const swaggerDefinition = {
     { name: "Authentication", description: "Autenticación (Firebase ID token)" },
     { name: "Concessions", description: "Concesiones" },
     { name: "Products", description: "Productos" },
+    { name: "Combos", description: "Combos de productos" },
     { name: "Sucursales", description: "Sucursales y cajas" },
     { name: "Zonas", description: "Zonas" },
     { name: "Jornadas", description: "Jornada activa (Realtime DB)" },
@@ -107,6 +112,8 @@ const swaggerDefinition = {
       AssignUserToConcession: z2j(assignUserToConcessionSchema),
       CreateProduct: z2j(createProductSchema),
       UpdateProduct: z2j(updateProductSchema),
+      CreateCombo: z2j(createComboSchema),
+      UpdateCombo: z2j(updateComboSchema),
       CreateSucursal: z2j(createSucursalSchema),
       UpdateSucursal: z2j(updateSucursalSchema),
       CreateZona: z2j(createZonaSchema),
@@ -346,6 +353,33 @@ const swaggerDefinition = {
     "/detalle-venta/{id}": {
       get: { tags: ["DetalleVenta"], summary: "Obtener", security: bearer, parameters: [idParam], responses: { 200: ok("OK") } },
       put: { tags: ["DetalleVenta"], summary: "Actualizar productos", security: bearer, parameters: [idParam], requestBody: json("UpdateDetalleVenta"), responses: { 200: ok("OK") } },
+    },
+    "/combos": {
+      get: {
+        tags: ["Combos"],
+        summary: "Listar combos",
+        security: bearer,
+        parameters: [
+          { in: "query", name: "concesionId", schema: { type: "string" }, description: "Filtrar por concesión (SUPERADMIN)" },
+          { in: "query", name: "includeInactive", schema: { type: "boolean" }, description: "Incluir inactivos (SUPERADMIN)" },
+        ],
+        responses: { 200: ok("Lista") },
+      },
+      post: {
+        tags: ["Combos"],
+        summary: "Crear combo (SUPERADMIN)",
+        security: bearer,
+        requestBody: json("CreateCombo"),
+        responses: { 201: ok("Creado") },
+      },
+    },
+    "/combos/{id}": {
+      get: { tags: ["Combos"], summary: "Obtener", security: bearer, parameters: [idParam], responses: { 200: ok("OK"), 403: ok("Sin acceso") } },
+      put: { tags: ["Combos"], summary: "Actualizar (SUPERADMIN)", security: bearer, parameters: [idParam], requestBody: json("UpdateCombo"), responses: { 200: ok("OK") } },
+      delete: { tags: ["Combos"], summary: "Eliminar (soft, SUPERADMIN)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminado") } },
+    },
+    "/combos/{id}/hard": {
+      delete: { tags: ["Combos"], summary: "Eliminar permanente (SUPERADMIN)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminado") } },
     },
   },
 };

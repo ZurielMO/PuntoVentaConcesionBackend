@@ -23,4 +23,4 @@ ui-debug.log*
 
 
 serviceAccountAppOficial.json
-serviceAccount*.json
+serviceAccount*.json/serviceAccountAppOficial.json
