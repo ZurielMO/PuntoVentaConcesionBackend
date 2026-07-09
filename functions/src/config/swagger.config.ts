@@ -158,7 +158,7 @@ const swaggerDefinition = {
     "/concessions": {
       get: {
         tags: ["Concessions"],
-        summary: "Listar concesiones activas",
+        summary: "Listar concesiones (activas e inactivas)",
         security: bearer,
         responses: { 200: ok("Lista") },
       },
@@ -223,7 +223,20 @@ const swaggerDefinition = {
       post: { tags: ["Products"], summary: "Crear producto", security: bearer, parameters: [{ in: "path", name: "concesionId", required: true, schema: { type: "string" } }], requestBody: json("CreateProduct"), responses: { 201: ok("Creado") } },
     },
     "/products": {
-      get: { tags: ["Products"], summary: "Listar productos activos", security: bearer, responses: { 200: ok("Lista") } },
+      get: {
+        tags: ["Products"],
+        summary: "Listar productos (activos por defecto)",
+        security: bearer,
+        parameters: [
+          {
+            in: "query",
+            name: "includeInactive",
+            schema: { type: "boolean" },
+            description: "Incluir inactivos (ADMIN / SUPERADMIN)",
+          },
+        ],
+        responses: { 200: ok("Lista") },
+      },
       post: {
         tags: ["Products"],
         summary: "Crear producto (JSON o multipart con images)",
@@ -294,7 +307,20 @@ const swaggerDefinition = {
     },
     "/sucursales/{id}/cajas": { get: { tags: ["Sucursales"], summary: "Cajas de la sucursal", security: bearer, parameters: [idParam], responses: { 200: ok("Lista") } } },
     "/zonas": {
-      get: { tags: ["Zonas"], summary: "Listar activas", security: bearer, responses: { 200: ok("Lista") } },
+      get: {
+        tags: ["Zonas"],
+        summary: "Listar zonas (activas por defecto)",
+        security: bearer,
+        parameters: [
+          {
+            in: "query",
+            name: "includeInactive",
+            schema: { type: "boolean" },
+            description: "Incluir inactivas (SUPERADMIN)",
+          },
+        ],
+        responses: { 200: ok("Lista") },
+      },
       post: { tags: ["Zonas"], summary: "Crear", security: bearer, requestBody: json("CreateZona"), responses: { 201: ok("Creada") } },
     },
     "/zonas/{id}": {
