@@ -1,3 +1,6 @@
+# Instaladores locales (no versionar)
+*.exe
+
 node_modules/
 lib/
 dist/

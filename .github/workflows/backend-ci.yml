@@ -1,41 +1,95 @@
-name: Backend CI
+name: Backend CI/CD
 
 on:
   pull_request:
     branches:
       - main
+      - develop
 
   push:
     branches:
-      - develop
       - main
+      - develop
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Verify Backend
+  quality:
+    name: Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: functions
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
 
       - name: Install dependencies
-        run: |
-          cd functions
-          npm ci
+        run: npm ci
 
       - name: Run tests
-        run: |
-          cd functions
-          npm test -- --passWithNoTests
+        run: npm test
 
-      - name: Build
-        run: |
-          cd functions
-          npm run build
+      - name: Build TypeScript
+        run: npm run build
+
+  deploy-production:
+    name: Deploy Production
+    needs: quality
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+
+    concurrency:
+      group: backend-production
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Install dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Build TypeScript
+        working-directory: functions
+        run: npm run build
+
+      - name: Deploy Cloud Functions
+        run: >
+          npx firebase-tools@latest deploy
+          --only functions
+          --project "${{ vars.FIREBASE_PROJECT_ID }}"
+          --non-interactive
