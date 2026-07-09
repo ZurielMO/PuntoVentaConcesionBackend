@@ -1,10 +1,18 @@
 import { z } from "zod";
 
+const porcentajeComisionField = z
+  .number()
+  .min(0, "El porcentaje no puede ser negativo")
+  .max(100, "El porcentaje no puede ser mayor a 100")
+  .optional()
+  .default(0);
+
 export const createConcessionSchema = z
   .object({
     nombre: z.string().min(1).max(200),
     activo: z.boolean().optional().default(true),
     imagenes: z.array(z.string().url()).optional().default([]),
+    porcentajeComision: porcentajeComisionField,
   })
   .strict();
 
@@ -13,6 +21,7 @@ export const replaceConcessionSchema = z
     nombre: z.string().min(1).max(200),
     activo: z.boolean().optional().default(true),
     imagenes: z.array(z.string().url()).optional().default([]),
+    porcentajeComision: porcentajeComisionField,
   })
   .strict();
 
@@ -37,4 +46,17 @@ export const assignUserToConcessionSchema = z
   .strict();
 
 export type AssignUserToConcessionInput = z.infer<typeof assignUserToConcessionSchema>;
+
+export const updateConcessionComisionSchema = z
+  .object({
+    porcentajeComision: z
+      .number()
+      .min(0, "El porcentaje no puede ser negativo")
+      .max(100, "El porcentaje no puede ser mayor a 100"),
+  })
+  .strict();
+
+export type UpdateConcessionComisionInput = z.infer<
+  typeof updateConcessionComisionSchema
+>;
 

@@ -33,6 +33,8 @@ export interface Concession extends BaseEntity {
     activo: boolean;
     imagenes: string[];
     idUser?: string | null;
+    /** Porcentaje de comisión del operador sobre venta neta (0–100). */
+    porcentajeComision?: number | null;
 }
 
 export interface Zona extends BaseEntity {

@@ -8,11 +8,16 @@ import { normalizeRecordImageUrls } from "./storage.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.CONCESIONES);
 
-const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } =>
-  normalizeRecordImageUrls({
+const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } => {
+  const data = normalizeRecordImageUrls({
     id: doc.id,
     ...doc.data(),
   });
+  return {
+    ...data,
+    porcentajeComision: Number(data.porcentajeComision ?? 0),
+  };
+};
 
 export const listConcessions = async () => {
   const snap = await col().where("activo", "==", true).get();
@@ -58,13 +63,19 @@ export const getConcessionNombre = async (
 };
 
 export const createConcession = async (
-  data: { nombre: string; activo?: boolean; imagenes?: string[] },
+  data: {
+    nombre: string;
+    activo?: boolean;
+    imagenes?: string[];
+    porcentajeComision?: number;
+  },
   idUser?: string,
 ) => {
   const payload = {
     nombre: data.nombre,
     activo: data.activo ?? true,
     imagenes: data.imagenes ?? [],
+    porcentajeComision: data.porcentajeComision ?? 0,
     idUser: idUser ?? null,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -76,7 +87,12 @@ export const createConcession = async (
 
 export const replaceConcession = async (
   id: string,
-  data: { nombre: string; activo?: boolean; imagenes?: string[] },
+  data: {
+    nombre: string;
+    activo?: boolean;
+    imagenes?: string[];
+    porcentajeComision?: number;
+  },
 ) => {
   const ref = col().doc(id);
   const doc = await ref.get();
@@ -91,6 +107,8 @@ export const replaceConcession = async (
     activo: data.activo ?? true,
     imagenes: data.imagenes ?? [],
     idUser: existing.idUser ?? null,
+    porcentajeComision:
+      data.porcentajeComision ?? existing.porcentajeComision ?? 0,
     createdAt: existing.createdAt ?? FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -109,6 +127,25 @@ export const softDeleteConcession = async (id: string) => {
     activo: false,
     updatedAt: FieldValue.serverTimestamp(),
   });
+};
+
+export const updateConcessionComision = async (
+  id: string,
+  porcentajeComision: number,
+) => {
+  const ref = col().doc(id);
+  const doc = await ref.get();
+  if (!doc.exists || doc.data()?.activo === false) {
+    throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
+  }
+
+  await ref.update({
+    porcentajeComision,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  const updated = await ref.get();
+  return toData(updated);
 };
 
 // ---------------------------------------------------------------------------

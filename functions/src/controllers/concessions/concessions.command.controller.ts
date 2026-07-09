@@ -67,6 +67,20 @@ export const assignConcessionPoints = asyncHandler(
   },
 );
 
+export const updateConcessionComision = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await concessionService.updateConcessionComision(
+      req.params.id,
+      req.body.porcentajeComision,
+    );
+    res.status(200).json({
+      success: true,
+      data,
+      message: "Comisión actualizada",
+    });
+  },
+);
+
 export const uploadConcessionImages = asyncHandler(
   async (req: Request, res: Response) => {
     const concession = await concessionService.getConcessionById(req.params.id);
