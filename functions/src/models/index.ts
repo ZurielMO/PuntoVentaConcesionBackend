@@ -16,7 +16,7 @@ export interface BaseEntity {
 export interface User extends BaseEntity {
     uid: string;
     nombre: string;
-    fecha_nacimiento: string;
+    fecha_nacimiento?: string | null;
     email: string;
     rol: UserRole;
     activo: boolean;

@@ -2,6 +2,7 @@ import {
   aggregateTotalsByMetodoPago,
   aggregateProductosFromVentas,
   aggregatePromociones2x1FromVentas,
+  aggregateTiposVentaFromVentas,
   aggregateCombosFromVentas,
   computeDiferenciaCaja,
 } from "../src/services/corte.service";
@@ -341,6 +342,102 @@ describe("aggregatePromociones2x1FromVentas", () => {
       unidadesGratis: 0,
       cantidadTransacciones: 0,
     });
+  });
+});
+
+describe("aggregateTiposVentaFromVentas", () => {
+  it("clasifica venta normal, abonado, abonado con puntos y normal con puntos", () => {
+    const rows = aggregateTiposVentaFromVentas([
+      {
+        total: 130,
+        metodoPago: "efectivo",
+        montoEfectivo: 130,
+      },
+      {
+        total: 390,
+        metodoPago: "tarjeta",
+        montoTarjeta: 390,
+      },
+      {
+        total: 180,
+        metodoPago: "efectivo",
+        montoEfectivo: 180,
+        abonado: {
+          benefitId: "cerveza-precio-abonado",
+          titulo: "Precio abonado cerveza",
+          montoTotal: 180,
+          montoDescuento: 80,
+          unidadesGratis: 0,
+        },
+      },
+      {
+        total: 270,
+        metodoPago: "tarjeta",
+        montoTarjeta: 270,
+        abonado: {
+          benefitId: "cerveza-precio-abonado",
+          titulo: "Precio abonado cerveza",
+          montoTotal: 270,
+          montoDescuento: 120,
+          unidadesGratis: 0,
+        },
+      },
+      {
+        total: 90,
+        metodoPago: "puntos",
+        puntosUsados: 900,
+        montoPuntos: 90,
+        abonado: {
+          benefitId: "cerveza-precio-abonado",
+          titulo: "Precio abonado cerveza",
+          montoTotal: 90,
+          montoDescuento: 40,
+          unidadesGratis: 0,
+        },
+      },
+    ]);
+
+    const byTipo = Object.fromEntries(rows.map((r) => [r.tipo, r]));
+
+    expect(byTipo.normal).toMatchObject({
+      transacciones: 2,
+      efectivo: 130,
+      tarjeta: 390,
+      puntosMonto: 0,
+      valorTotal: 520,
+    });
+    expect(byTipo.abonado).toMatchObject({
+      transacciones: 2,
+      efectivo: 180,
+      tarjeta: 270,
+      descuentoAbonado: 200,
+      valorTotal: 450,
+    });
+    expect(byTipo.abonado_puntos).toMatchObject({
+      transacciones: 1,
+      puntosMonto: 90,
+      puntosCanjeados: 900,
+      descuentoAbonado: 40,
+      valorTotal: 90,
+    });
+    expect(byTipo.normal_puntos).toMatchObject({
+      transacciones: 0,
+      efectivo: 0,
+      tarjeta: 0,
+      puntosMonto: 0,
+    });
+  });
+
+  it("siempre devuelve las 4 filas con etiquetas fijas", () => {
+    const rows = aggregateTiposVentaFromVentas([]);
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.tipo)).toEqual([
+      "normal",
+      "abonado",
+      "abonado_puntos",
+      "normal_puntos",
+    ]);
+    expect(rows[0].etiqueta).toBe("Venta normal");
   });
 });
 

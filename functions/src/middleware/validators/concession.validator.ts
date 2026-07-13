@@ -20,7 +20,9 @@ export const replaceConcessionSchema = z
   .object({
     nombre: z.string().min(1).max(200),
     activo: z.boolean().optional().default(true),
-    imagenes: z.array(z.string().url()).optional().default([]),
+    // Omitido = conservar imágenes existentes (reactivar / editar nombre sin tocar logo).
+    // Enviar [] limpia el logo a propósito.
+    imagenes: z.array(z.string().url()).optional(),
     porcentajeComision: porcentajeComisionField,
   })
   .strict();

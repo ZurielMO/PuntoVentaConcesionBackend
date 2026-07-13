@@ -49,5 +49,7 @@ describe("storage.service", () => {
     const normalized = normalizeFirebaseImageUrl(old);
     expect(normalized).not.toContain("token=");
     expect(normalized).toContain("?alt=media");
+    // Conserva el bucket de la URL original (no reescribe al bucket del admin).
+    expect(normalized).toContain("/b/bucket/");
   });
 });

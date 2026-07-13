@@ -5,6 +5,9 @@ import { ApiError } from "../utils/api-error";
 
 const col = () => firestorePos.collection(COLLECTIONS.SUCURSALES);
 
+/** Máximo de cajas por sucursal (activas + desactivadas). */
+export const MAX_CAJAS_POR_SUCURSAL = 3;
+
 const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   id: doc.id,
   ...doc.data(),
@@ -23,8 +26,16 @@ const normalizeCaja = (doc: FirebaseFirestore.DocumentSnapshot) => {
 
 const assertSucursalExists = async (sucursalId: string) => {
   const doc = await col().doc(sucursalId).get();
-  if (!doc.exists || doc.data()?.activo === false) {
+  if (!doc.exists) {
     throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
+  }
+  return doc;
+};
+
+const assertSucursalActive = async (sucursalId: string) => {
+  const doc = await assertSucursalExists(sucursalId);
+  if (doc.data()?.activo === false) {
+    throw new ApiError(400, "La sucursal está desactivada", true, "SUCURSAL_INACTIVE");
   }
   return doc;
 };
@@ -40,14 +51,15 @@ const getCajasOf = async (sucursalId: string, includeInactive = false) => {
 };
 
 export const listSucursales = async (concesionId?: string) => {
-  let query: FirebaseFirestore.Query = col().where("activo", "==", true);
+  // Incluye desactivadas para administración (estado y reactivación en UI).
+  let query: FirebaseFirestore.Query = col();
   if (concesionId) {
     query = query.where("concesion_id", "==", concesionId);
   }
   const snap = await query.get();
   const sucursales = await Promise.all(
     snap.docs.map(async (doc) => {
-      const cajas = await getCajasOf(doc.id);
+      const cajas = await getCajasOf(doc.id, true);
       return { ...toData(doc), cajas };
     }),
   );
@@ -83,6 +95,7 @@ export const assertCajaBelongsToSucursal = async (
   sucursalId: string,
   cajaId: string,
 ) => {
+  await assertSucursalActive(sucursalId);
   const caja = await getCajaById(sucursalId, cajaId);
   if (caja.activo === false) {
     throw new ApiError(400, "La caja está inactiva", true, "CAJA_INACTIVE");
@@ -94,7 +107,16 @@ export const createCaja = async (
   sucursalId: string,
   data: { nombre: string; orden?: number },
 ) => {
-  await assertSucursalExists(sucursalId);
+  await assertSucursalActive(sucursalId);
+  const existentes = await getCajasOf(sucursalId, true);
+  if (existentes.length >= MAX_CAJAS_POR_SUCURSAL) {
+    throw new ApiError(
+      400,
+      `Máximo ${MAX_CAJAS_POR_SUCURSAL} cajas por sucursal`,
+      true,
+      "MAX_CAJAS",
+    );
+  }
   const ref = col().doc(sucursalId).collection(SUBCOLLECTIONS.CAJAS).doc();
   const payload = {
     nombre: data.nombre.trim(),
@@ -132,6 +154,18 @@ export const softDeleteCaja = async (sucursalId: string, cajaId: string) => {
 
 /** Compat legacy: crea cajas por nombre al crear sucursal (doc id = nombre). */
 const setCajasLegacy = async (sucursalId: string, cajas: string[]) => {
+  const existentes = await getCajasOf(sucursalId, true);
+  const nombresNuevos = cajas.map((n) => n.trim()).filter(Boolean);
+  const idsExistentes = new Set(existentes.map((c) => c.id));
+  const aCrear = nombresNuevos.filter((n) => !idsExistentes.has(n));
+  if (existentes.length + aCrear.length > MAX_CAJAS_POR_SUCURSAL) {
+    throw new ApiError(
+      400,
+      `Máximo ${MAX_CAJAS_POR_SUCURSAL} cajas por sucursal`,
+      true,
+      "MAX_CAJAS",
+    );
+  }
   const batch = firestorePos.batch();
   const cajasRef = col().doc(sucursalId).collection(SUBCOLLECTIONS.CAJAS);
   for (const nombre of cajas) {

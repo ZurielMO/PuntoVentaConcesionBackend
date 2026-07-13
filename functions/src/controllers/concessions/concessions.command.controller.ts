@@ -83,20 +83,25 @@ export const updateConcessionComision = asyncHandler(
 
 export const uploadConcessionImages = asyncHandler(
   async (req: Request, res: Response) => {
-    const concession = await concessionService.getConcessionById(req.params.id);
+    await concessionService.getConcessionById(req.params.id);
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
     if (files.length === 0) {
       throw new ApiError(400, "No se enviaron imágenes", true, "NO_FILES");
     }
 
-    const existingCount = ((concession.imagenes as string[] | undefined) ?? []).length;
+    // Logo único: reemplaza (no append) para no dejar URLs rotas al frente.
     const urls = await storageService.uploadConcessionImages(
       req.params.id,
       files,
-      existingCount,
+      0,
     );
-    const updated = await concessionService.appendConcessionImages(req.params.id, urls);
+    const { updated, previousUrls } =
+      await concessionService.replaceConcessionImages(req.params.id, urls);
+
+    await Promise.all(
+      previousUrls.map((url) => storageService.deleteStorageFileByUrl(url)),
+    );
 
     res.status(200).json({
       success: true,

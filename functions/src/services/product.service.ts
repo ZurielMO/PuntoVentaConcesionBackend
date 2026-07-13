@@ -12,16 +12,30 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown
     ...doc.data(),
   });
 
-export const listProductsByConcession = async (concesionId: string) => {
-  const snap = await col()
-    .where("concesion_id", "==", concesionId)
-    .where("activo", "==", true)
-    .get();
+export const listProductsByConcession = async (
+  concesionId: string,
+  includeInactive = false,
+) => {
+  let query: FirebaseFirestore.Query = col().where(
+    "concesion_id",
+    "==",
+    concesionId,
+  );
+  if (!includeInactive) {
+    query = query.where("activo", "==", true);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 
-export const listProducts = async (concesionId?: string) => {
-  let query: FirebaseFirestore.Query = col().where("activo", "==", true);
+export const listProducts = async (
+  concesionId?: string,
+  includeInactive = false,
+) => {
+  let query: FirebaseFirestore.Query = col();
+  if (!includeInactive) {
+    query = query.where("activo", "==", true);
+  }
   if (concesionId) {
     query = query.where("concesion_id", "==", concesionId);
   }
@@ -31,7 +45,7 @@ export const listProducts = async (concesionId?: string) => {
 
 export const getProductById = async (id: string) => {
   const doc = await col().doc(id).get();
-  if (!doc.exists || doc.data()?.activo === false) {
+  if (!doc.exists) {
     throw new ApiError(404, "Producto no encontrado", true, "NOT_FOUND");
   }
   return toData(doc);

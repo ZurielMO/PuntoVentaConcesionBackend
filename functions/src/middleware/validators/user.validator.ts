@@ -21,7 +21,7 @@ export const userRolEnum = z.enum([
 export const createUserSchema = z
   .object({
     nombre: z.string().min(1).max(200),
-    fecha_nacimiento: z.string().min(1),
+    fecha_nacimiento: z.string().min(1).optional(),
     email: z.string().email("Email inválido"),
     password: z.string().min(6, "Mínimo 6 caracteres"),
     rol: assignableRolSchema,
@@ -50,7 +50,11 @@ export const updateUserSchema = z
     nombre: z.string().min(1).max(200).optional(),
     fecha_nacimiento: z.string().min(1).optional(),
     email: z.string().email().optional(),
-    password: z.string().min(6).optional(),
+    password: z.preprocess(
+      (val) =>
+        typeof val === "string" && val.trim() === "" ? undefined : val,
+      z.string().min(6, "Mínimo 6 caracteres").optional(),
+    ),
     rol: assignableRolSchema.optional(),
     activo: z.boolean().optional(),
     concesionId: z.string().min(1).optional(),

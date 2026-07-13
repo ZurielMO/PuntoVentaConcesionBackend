@@ -326,6 +326,175 @@ export const aggregatePromociones2x1FromVentas = (
   };
 };
 
+export type ReporteTipoVentaTipo =
+  | "normal"
+  | "abonado"
+  | "abonado_puntos"
+  | "normal_puntos";
+
+export interface ReporteTipoVentaBucket {
+  transacciones: number;
+  efectivo: number;
+  tarjeta: number;
+  puntosMonto: number;
+  puntosCanjeados: number;
+  valorTotal: number;
+  descuentoAbonado: number;
+}
+
+export interface ReporteTipoVentaRow extends ReporteTipoVentaBucket {
+  tipo: ReporteTipoVentaTipo;
+  etiqueta: string;
+  descripcion: string;
+}
+
+const REPORTE_TIPOS_VENTA_META: Record<
+  ReporteTipoVentaTipo,
+  { etiqueta: string; descripcion: string }
+> = {
+  normal: {
+    etiqueta: "Venta normal",
+    descripcion: "Cliente público, precio de lista, sin puntos",
+  },
+  abonado: {
+    etiqueta: "Venta abonado",
+    descripcion:
+      "Beneficio de temporada (precio especial, 2x1, etc.), pago en efectivo o tarjeta",
+  },
+  abonado_puntos: {
+    etiqueta: "Abonado con puntos",
+    descripcion: "Beneficio abonado con canje total o parcial con puntos",
+  },
+  normal_puntos: {
+    etiqueta: "Cliente con puntos",
+    descripcion: "Sin beneficio abonado, pago con puntos",
+  },
+};
+
+const emptyTipoVentaBucket = (): ReporteTipoVentaBucket => ({
+  transacciones: 0,
+  efectivo: 0,
+  tarjeta: 0,
+  puntosMonto: 0,
+  puntosCanjeados: 0,
+  valorTotal: 0,
+  descuentoAbonado: 0,
+});
+
+/** @internal exported for unit tests */
+export const classifyVentaTipo = (
+  venta: Record<string, unknown>,
+): ReporteTipoVentaTipo => {
+  const abonado = venta.abonado as Record<string, unknown> | null | undefined;
+  const esAbonado =
+    abonado != null &&
+    (Number(abonado.montoDescuento ?? 0) > 0 ||
+      Number(abonado.unidadesGratis ?? 0) > 0);
+
+  const puntosUsados = Number(venta.puntosUsados ?? 0);
+  const montoPuntos = Number(venta.montoPuntos ?? 0);
+  const metodoPago = String(venta.metodoPago ?? "");
+  const usaPuntos =
+    puntosUsados > 0 || montoPuntos > 0 || metodoPago === "puntos";
+
+  if (esAbonado && usaPuntos) return "abonado_puntos";
+  if (esAbonado) return "abonado";
+  if (usaPuntos) return "normal_puntos";
+  return "normal";
+};
+
+/** @internal exported for unit tests */
+export const extractMontosVenta = (
+  venta: Record<string, unknown>,
+): {
+  efectivo: number;
+  tarjeta: number;
+  puntosMonto: number;
+  puntosCanjeados: number;
+  valorTotal: number;
+} => {
+  const puntosUsados = Number(venta.puntosUsados ?? 0);
+  const montoPuntos = Number(venta.montoPuntos ?? 0);
+  const montoEfectivo = venta.montoEfectivo;
+  const montoTarjeta = venta.montoTarjeta;
+  const ventaTotal = Number(venta.total ?? 0);
+
+  if (montoEfectivo != null || montoTarjeta != null || montoPuntos > 0) {
+    return {
+      efectivo: roundMoney(Number(montoEfectivo ?? 0)),
+      tarjeta: roundMoney(Number(montoTarjeta ?? 0)),
+      puntosMonto: roundMoney(montoPuntos),
+      puntosCanjeados: puntosUsados > 0 ? puntosUsados : 0,
+      valorTotal: roundMoney(ventaTotal),
+    };
+  }
+
+  const metodo = String(venta.metodoPago ?? "efectivo");
+  if (metodo === "tarjeta") {
+    return {
+      efectivo: 0,
+      tarjeta: roundMoney(ventaTotal),
+      puntosMonto: 0,
+      puntosCanjeados: 0,
+      valorTotal: roundMoney(ventaTotal),
+    };
+  }
+
+  return {
+    efectivo: roundMoney(ventaTotal),
+    tarjeta: 0,
+    puntosMonto: 0,
+    puntosCanjeados: 0,
+    valorTotal: roundMoney(ventaTotal),
+  };
+};
+
+/** @internal exported for unit tests */
+export const aggregateTiposVentaFromVentas = (
+  ventas: Array<Record<string, unknown>>,
+): ReporteTipoVentaRow[] => {
+  const buckets = new Map<ReporteTipoVentaTipo, ReporteTipoVentaBucket>();
+  const tipos: ReporteTipoVentaTipo[] = [
+    "normal",
+    "abonado",
+    "abonado_puntos",
+    "normal_puntos",
+  ];
+  for (const tipo of tipos) {
+    buckets.set(tipo, emptyTipoVentaBucket());
+  }
+
+  for (const venta of ventas) {
+    const tipo = classifyVentaTipo(venta);
+    const bucket = buckets.get(tipo)!;
+    const montos = extractMontosVenta(venta);
+
+    bucket.transacciones += 1;
+    bucket.efectivo = roundMoney(bucket.efectivo + montos.efectivo);
+    bucket.tarjeta = roundMoney(bucket.tarjeta + montos.tarjeta);
+    bucket.puntosMonto = roundMoney(bucket.puntosMonto + montos.puntosMonto);
+    bucket.puntosCanjeados += montos.puntosCanjeados;
+    bucket.valorTotal = roundMoney(bucket.valorTotal + montos.valorTotal);
+
+    if (tipo === "abonado" || tipo === "abonado_puntos") {
+      const abonado = venta.abonado as Record<string, unknown> | null | undefined;
+      bucket.descuentoAbonado = roundMoney(
+        bucket.descuentoAbonado + Number(abonado?.montoDescuento ?? 0),
+      );
+    }
+  }
+
+  return tipos.map((tipo) => {
+    const meta = REPORTE_TIPOS_VENTA_META[tipo];
+    return {
+      tipo,
+      etiqueta: meta.etiqueta,
+      descripcion: meta.descripcion,
+      ...buckets.get(tipo)!,
+    };
+  });
+};
+
 /** @internal exported for unit tests */
 export const aggregateCombosFromVentas = (
   ventas: Array<Record<string, unknown>>,

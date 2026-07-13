@@ -29,6 +29,19 @@ describe("user validators", () => {
         expect(parsed.concesionId).toBe("concession-1");
     });
 
+    it("acepta crear usuario sin fecha_nacimiento", () => {
+        const parsed = createUserSchema.parse({
+            nombre: "Sin Fecha",
+            email: "sinfecha@example.com",
+            password: "123456",
+            rol: "ADMIN",
+            concesionId: "concession-1",
+        });
+
+        expect(parsed.fecha_nacimiento).toBeUndefined();
+        expect(parsed.concesionId).toBe("concession-1");
+    });
+
     it("rechaza VENDEDOR sin sucursalId", () => {
         expect(() =>
             createUserSchema.parse({
