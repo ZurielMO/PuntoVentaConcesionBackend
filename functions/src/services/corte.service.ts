@@ -5,9 +5,12 @@ import { ApiError } from "../utils/api-error";
 import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import * as comboService from "./combo.service";
+import { buildJornadaId } from "./asignacion-caja.service";
+import { resolveJornadaPrimaria } from "./jornada.service";
 import type { OperationalListFilters } from "../utils/list-filters.util";
 
 const col = () => firestorePos.collection(COLLECTIONS.CORTES);
+const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 
 const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   id: doc.id,
@@ -18,6 +21,7 @@ export interface CorteListFilters {
   concesionId?: string;
   sucursalId?: string;
   idUser?: string;
+  jornadaId?: string;
 }
 
 export const listCortes = async (filters: CorteListFilters = {}) => {
@@ -32,7 +36,19 @@ export const listCortes = async (filters: CorteListFilters = {}) => {
     query = query.where("idUser", "==", filters.idUser);
   }
   const snap = await query.get();
-  return snap.docs.map(toData);
+  let results = snap.docs.map(toData);
+
+  if (filters.jornadaId) {
+    const prefix = `${filters.jornadaId}__`;
+    results = results.filter((row) => {
+      const c = row as Record<string, unknown>;
+      if (c.jornadaId === filters.jornadaId) return true;
+      const invId = String(c.inventarioId ?? "");
+      return invId.startsWith(prefix);
+    });
+  }
+
+  return results;
 };
 
 export const getCorteById = async (id: string) => {
@@ -67,6 +83,8 @@ export const createCorte = async (
     combos?: CorteResumenCombos;
     efectivoContado?: number | null;
     diferenciaCaja?: number | null;
+    jornadaId?: string | null;
+    inventarioId?: string | null;
   },
 ) => {
   const payload = {
@@ -74,6 +92,8 @@ export const createCorte = async (
     idUser: context.idUser,
     concesionId: context.concesionId,
     sucursalId: context.sucursalId ?? null,
+    jornadaId: data.jornadaId ?? null,
+    inventarioId: data.inventarioId ?? null,
     fecha: data.fecha,
     comentarios: data.comentarios ?? null,
     estatus: data.estatus,
@@ -380,6 +400,127 @@ const emptyTipoVentaBucket = (): ReporteTipoVentaBucket => ({
   valorTotal: 0,
   descuentoAbonado: 0,
 });
+
+/** @internal exported for unit tests */
+export const isVentaAbonado = (venta: Record<string, unknown>): boolean => {
+  const abonado = venta.abonado as Record<string, unknown> | null | undefined;
+  return (
+    abonado != null &&
+    (Number(abonado.montoDescuento ?? 0) > 0 ||
+      Number(abonado.unidadesGratis ?? 0) > 0)
+  );
+};
+
+export interface ProductoReporteAgg {
+  cantidadRegular: number;
+  cantidadAbonado: number;
+  ventasRegular: number;
+  ventasAbonado: number;
+  cortesias: number;
+  puntosCanjeados: number;
+  ventasTotales: number;
+}
+
+const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
+  cantidadRegular: 0,
+  cantidadAbonado: 0,
+  ventasRegular: 0,
+  ventasAbonado: 0,
+  cortesias: 0,
+  puntosCanjeados: 0,
+  ventasTotales: 0,
+});
+
+/** @internal exported for unit tests */
+export const aggregateProductoReporteFromVentas = (
+  ventas: Array<Record<string, unknown>>,
+): Map<string, ProductoReporteAgg> => {
+  const byProduct = new Map<string, ProductoReporteAgg>();
+
+  for (const venta of ventas) {
+    const esAbonado = isVentaAbonado(venta);
+    const ventaTotal = Number(venta.total ?? 0);
+    const montoPuntos = Number(venta.montoPuntos ?? 0);
+
+    const detalle = Array.isArray(venta.detalle)
+      ? (venta.detalle as Array<Record<string, unknown>>)
+      : [];
+    const lineasVenta = Array.isArray(venta.lineasVenta)
+      ? (venta.lineasVenta as Array<Record<string, unknown>>)
+      : [];
+    const source = detalle.length > 0 ? detalle : lineasVenta;
+
+    for (const linea of source) {
+      const productoId = String(linea.producto ?? "");
+      if (!productoId) continue;
+
+      const cantidad = Number(linea.cantidad ?? 0);
+      const precio = Number(linea.precio_actual ?? 0);
+      const subtotal =
+        linea.subtotal != null
+          ? Number(linea.subtotal)
+          : roundMoney(precio * cantidad);
+
+      const prev = byProduct.get(productoId) ?? emptyProductoReporteAgg();
+
+      if (precio === 0) {
+        prev.cortesias += cantidad;
+      } else if (esAbonado) {
+        prev.cantidadAbonado += cantidad;
+        prev.ventasAbonado = roundMoney(prev.ventasAbonado + subtotal);
+      } else {
+        prev.cantidadRegular += cantidad;
+        prev.ventasRegular = roundMoney(prev.ventasRegular + subtotal);
+      }
+
+      prev.ventasTotales = roundMoney(prev.ventasTotales + subtotal);
+
+      if (montoPuntos > 0 && ventaTotal > 0) {
+        prev.puntosCanjeados = roundMoney(
+          prev.puntosCanjeados + (subtotal / ventaTotal) * montoPuntos,
+        );
+      }
+
+      byProduct.set(productoId, prev);
+    }
+  }
+
+  return byProduct;
+};
+
+export interface ReporteProductoTotalesRow {
+  cantidadRegular: number;
+  cantidadAbonado: number;
+  ventasRegular: number;
+  ventasAbonado: number;
+  cortesias: number;
+  puntosCanjeados: number;
+  ventasTotales: number;
+  dineroReal: number;
+}
+
+/** @internal exported for unit tests */
+export const buildReporteProductoTotales = (
+  rows: ProductoReporteAgg[],
+): ReporteProductoTotalesRow => {
+  const totals = rows.reduce(
+    (acc, row) => ({
+      cantidadRegular: acc.cantidadRegular + row.cantidadRegular,
+      cantidadAbonado: acc.cantidadAbonado + row.cantidadAbonado,
+      ventasRegular: roundMoney(acc.ventasRegular + row.ventasRegular),
+      ventasAbonado: roundMoney(acc.ventasAbonado + row.ventasAbonado),
+      cortesias: acc.cortesias + row.cortesias,
+      puntosCanjeados: roundMoney(acc.puntosCanjeados + row.puntosCanjeados),
+      ventasTotales: roundMoney(acc.ventasTotales + row.ventasTotales),
+    }),
+    emptyProductoReporteAgg(),
+  );
+
+  return {
+    ...totals,
+    dineroReal: roundMoney(totals.ventasTotales - totals.puntosCanjeados),
+  };
+};
 
 /** @internal exported for unit tests */
 export const classifyVentaTipo = (
@@ -725,6 +866,26 @@ export const cerrarCorte = async (
     resumen.totalEfectivo,
   );
 
+  let jornadaId: string | null = null;
+  const inventarioId = filters.inventarioId ?? null;
+  if (inventarioId) {
+    const invDoc = await inventariosCol().doc(inventarioId).get();
+    if (invDoc.exists) {
+      const inv = invDoc.data() ?? {};
+      jornadaId = buildJornadaId(
+        String(inv.jornada_fecha ?? ""),
+        Number(inv.jornada_numero ?? 0),
+      );
+    }
+  } else {
+    try {
+      const primaria = await resolveJornadaPrimaria();
+      jornadaId = buildJornadaId(primaria.fecha, primaria.jornadaNumero);
+    } catch {
+      jornadaId = null;
+    }
+  }
+
   return createCorte(
     {
       concesionId: context.concesionId,
@@ -749,6 +910,8 @@ export const cerrarCorte = async (
       combos: resumen.combos,
       efectivoContado,
       diferenciaCaja,
+      jornadaId,
+      inventarioId,
     },
   );
 };

@@ -3,6 +3,8 @@ import {
   aggregateProductosFromVentas,
   aggregatePromociones2x1FromVentas,
   aggregateTiposVentaFromVentas,
+  aggregateProductoReporteFromVentas,
+  buildReporteProductoTotales,
   aggregateCombosFromVentas,
   computeDiferenciaCaja,
 } from "../src/services/corte.service";
@@ -438,6 +440,71 @@ describe("aggregateTiposVentaFromVentas", () => {
       "normal_puntos",
     ]);
     expect(rows[0].etiqueta).toBe("Venta normal");
+  });
+});
+
+describe("aggregateProductoReporteFromVentas", () => {
+  it("desglosa cantidades y montos regular, abonado, cortesías y puntos por producto", () => {
+    const byProduct = aggregateProductoReporteFromVentas([
+      {
+        total: 130,
+        metodoPago: "efectivo",
+        montoEfectivo: 130,
+        detalle: [
+          { producto: "cerveza", cantidad: 1, precio_actual: 130, subtotal: 130 },
+        ],
+      },
+      {
+        total: 390,
+        metodoPago: "tarjeta",
+        montoTarjeta: 390,
+        detalle: [
+          { producto: "cerveza", cantidad: 3, precio_actual: 130, subtotal: 390 },
+        ],
+      },
+      {
+        total: 180,
+        metodoPago: "efectivo",
+        montoEfectivo: 180,
+        abonado: {
+          montoDescuento: 80,
+          montoTotal: 180,
+          unidadesGratis: 0,
+        },
+        detalle: [
+          { producto: "cerveza", cantidad: 2, precio_actual: 90, subtotal: 180 },
+        ],
+      },
+      {
+        total: 90,
+        metodoPago: "puntos",
+        montoPuntos: 90,
+        puntosUsados: 900,
+        abonado: {
+          montoDescuento: 40,
+          montoTotal: 90,
+          unidadesGratis: 0,
+        },
+        detalle: [
+          { producto: "cerveza", cantidad: 1, precio_actual: 90, subtotal: 90 },
+        ],
+      },
+    ]);
+
+    const cerveza = byProduct.get("cerveza");
+    expect(cerveza).toMatchObject({
+      cantidadRegular: 4,
+      cantidadAbonado: 3,
+      ventasRegular: 520,
+      ventasAbonado: 270,
+      puntosCanjeados: 90,
+      ventasTotales: 790,
+    });
+
+    const totales = buildReporteProductoTotales([cerveza!]);
+    expect(totales.ventasTotales).toBe(790);
+    expect(totales.puntosCanjeados).toBe(90);
+    expect(totales.dineroReal).toBe(700);
   });
 });
 

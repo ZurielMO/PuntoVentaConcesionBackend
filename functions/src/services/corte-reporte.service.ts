@@ -1,28 +1,32 @@
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
-import { buildJornadaId } from "./asignacion-caja.service";
-import { aggregateTotalsByMetodoPago, aggregatePromociones2x1FromVentas, aggregateTiposVentaFromVentas, type ReporteTipoVentaRow } from "./corte.service";
+import {
+  aggregateProductoReporteFromVentas,
+  aggregateTotalsByMetodoPago,
+  buildReporteProductoTotales,
+  type ReporteProductoTotalesRow,
+} from "./corte.service";
 import * as concessionService from "./concession.service";
 import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
-import { resolveJornadaPrimaria } from "./jornada.service";
-import { normalizeFecha } from "./inventario.service";
+import { resolveJornadaParaReporte } from "./jornada.service";
 
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 const productosCol = (inventarioId: string) =>
   inventariosCol().doc(inventarioId).collection(SUBCOLLECTIONS.PRODUCTOS);
 
-const roundMoney = (value: number) => Math.round(value * 100) / 100;
-
 export interface ReporteProductoRow {
   productoId: string;
   nombre: string;
   inventarioInicial: number;
-  cantidadVendida: number;
-  precioUnitario: number;
   inventarioFinal: number;
+  cantidadRegular: number;
+  cantidadAbonado: number;
+  ventasRegular: number;
+  ventasAbonado: number;
   cortesias: number;
-  totalVendido: number;
+  puntosCanjeados: number;
+  ventasTotales: number;
 }
 
 export interface ReporteIngresos {
@@ -33,13 +37,6 @@ export interface ReporteIngresos {
   totalPuntosCanjeados: number;
   ventasConPuntos: number;
   cantidadVentas: number;
-}
-
-export interface ReportePromocionesAbonado {
-  cantidadTransacciones: number;
-  montoTotal: number;
-  montoDescuento: number;
-  unidadesGratis: number;
 }
 
 export interface ReporteConcesionRow {
@@ -54,15 +51,15 @@ export interface ReporteConcesionRow {
 export interface ReporteCortes {
   jornada: { fecha: string; numero: number; jornadaId: string };
   productos: ReporteProductoRow[] | null;
+  productoTotales: ReporteProductoTotalesRow | null;
   resumen: ReporteConcesionRow[];
   ingresos: ReporteIngresos | null;
-  tiposVenta: ReporteTipoVentaRow[] | null;
-  promocionesAbonado: ReportePromocionesAbonado | null;
 }
 
 export interface ReporteCortesFilters {
   concesionId?: string;
   sucursalId?: string;
+  jornadaId?: string;
   fecha?: string;
   jornadaNumero?: number;
 }
@@ -70,8 +67,9 @@ export interface ReporteCortesFilters {
 type StockAgg = {
   inventarioInicial: number;
   inventarioFinal: number;
-  precioJornada: number | null;
 };
+
+const roundMoney = (value: number) => Math.round(value * 100) / 100;
 
 const loadInventariosJornada = async (
   concesionId: string,
@@ -111,17 +109,11 @@ const aggregateStockByProduct = async (
       const productoId = String(data.producto_id ?? prodDoc.id);
       const inicial = Number(data.cantidad_inicial ?? 0);
       const final = Number(data.cantidad_final ?? inicial);
-      const precioJornada =
-        data.precio_jornada != null ? Number(data.precio_jornada) : null;
 
       const prev = byProduct.get(productoId);
       byProduct.set(productoId, {
         inventarioInicial: (prev?.inventarioInicial ?? 0) + inicial,
         inventarioFinal: (prev?.inventarioFinal ?? 0) + final,
-        precioJornada:
-          prev?.precioJornada != null
-            ? prev.precioJornada
-            : precioJornada,
       });
     }
   }
@@ -140,64 +132,27 @@ const filterVentasJornada = (
     return invId ? inventarioIds.has(invId) : false;
   });
 
-const aggregateCortesiasFromVentas = (
-  ventas: Array<Record<string, unknown>>,
-): Map<string, number> => {
-  const byProduct = new Map<string, number>();
-
-  for (const venta of ventas) {
-    const lineas = Array.isArray(venta.lineasVenta) ? venta.lineasVenta : [];
-    for (const linea of lineas) {
-      const row = linea as Record<string, unknown>;
-      const productoId = String(row.producto ?? "");
-      if (!productoId) continue;
-      if (Number(row.precio_actual ?? -1) !== 0) continue;
-      const cantidad = Number(row.cantidad ?? 0);
-      byProduct.set(productoId, (byProduct.get(productoId) ?? 0) + cantidad);
-    }
-  }
-
-  return byProduct;
-};
-
-const aggregateMontoFromDetalle = (
-  ventas: Array<Record<string, unknown>>,
-): Map<string, number> => {
-  const byProduct = new Map<string, number>();
-
-  for (const venta of ventas) {
-    const detalle = Array.isArray(venta.detalle) ? venta.detalle : [];
-    for (const linea of detalle) {
-      const row = linea as Record<string, unknown>;
-      const productoId = String(row.producto ?? "");
-      if (!productoId) continue;
-      const cantidad = Number(row.cantidad ?? 0);
-      const subtotal =
-        row.subtotal != null
-          ? Number(row.subtotal)
-          : roundMoney(Number(row.precio_actual ?? 0) * cantidad);
-      byProduct.set(
-        productoId,
-        roundMoney((byProduct.get(productoId) ?? 0) + subtotal),
-      );
-    }
-  }
-
-  return byProduct;
-};
-
 const buildProductosReporte = async (
   concesionId: string,
   stockByProduct: Map<string, StockAgg>,
-  cortesiasByProduct: Map<string, number>,
-  montoByProduct: Map<string, number>,
+  ventasByProduct: Map<
+    string,
+    {
+      cantidadRegular: number;
+      cantidadAbonado: number;
+      ventasRegular: number;
+      ventasAbonado: number;
+      cortesias: number;
+      puntosCanjeados: number;
+      ventasTotales: number;
+    }
+  >,
 ): Promise<ReporteProductoRow[]> => {
   const catalog = await productService.listProducts(concesionId);
   const productIds = new Set<string>([
     ...catalog.map((p) => p.id),
     ...stockByProduct.keys(),
-    ...cortesiasByProduct.keys(),
-    ...montoByProduct.keys(),
+    ...ventasByProduct.keys(),
   ]);
 
   const rows: ReporteProductoRow[] = [];
@@ -205,27 +160,32 @@ const buildProductosReporte = async (
   for (const productoId of productIds) {
     const catalogProduct = catalog.find((p) => p.id === productoId);
     const stock = stockByProduct.get(productoId);
-    const precioUnitario = roundMoney(
-      stock?.precioJornada ??
-        Number((catalogProduct as { precio?: number })?.precio ?? 0),
-    );
-
-    const inventarioInicial = stock?.inventarioInicial ?? 0;
-    const inventarioFinal = stock?.inventarioFinal ?? 0;
+    const ventas = ventasByProduct.get(productoId);
 
     rows.push({
       productoId,
       nombre: String(catalogProduct?.nombre ?? "Producto"),
-      inventarioInicial,
-      cantidadVendida: Math.max(0, inventarioInicial - inventarioFinal),
-      precioUnitario,
-      inventarioFinal,
-      cortesias: cortesiasByProduct.get(productoId) ?? 0,
-      totalVendido: montoByProduct.get(productoId) ?? 0,
+      inventarioInicial: stock?.inventarioInicial ?? 0,
+      inventarioFinal: stock?.inventarioFinal ?? 0,
+      cantidadRegular: ventas?.cantidadRegular ?? 0,
+      cantidadAbonado: ventas?.cantidadAbonado ?? 0,
+      ventasRegular: ventas?.ventasRegular ?? 0,
+      ventasAbonado: ventas?.ventasAbonado ?? 0,
+      cortesias: ventas?.cortesias ?? 0,
+      puntosCanjeados: ventas?.puntosCanjeados ?? 0,
+      ventasTotales: ventas?.ventasTotales ?? 0,
     });
   }
 
-  return rows.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  return rows
+    .filter(
+      (row) =>
+        row.inventarioInicial > 0 ||
+        row.inventarioFinal > 0 ||
+        row.ventasTotales > 0 ||
+        row.cortesias > 0,
+    )
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
 };
 
 const buildResumenConcesion = (
@@ -277,10 +237,9 @@ const buildReporteForConcesion = async (
   includeDetalle = false,
 ): Promise<{
   productos: ReporteProductoRow[] | null;
+  productoTotales: ReporteProductoTotalesRow | null;
   resumen: ReporteConcesionRow;
   ingresos: ReporteIngresos | null;
-  tiposVenta: ReporteTipoVentaRow[] | null;
-  promocionesAbonado: ReportePromocionesAbonado | null;
 }> => {
   const inventarios = await loadInventariosJornada(
     concesion.id,
@@ -308,66 +267,71 @@ const buildReporteForConcesion = async (
   if (!includeDetalle) {
     return {
       productos: null,
+      productoTotales: null,
       resumen,
       ingresos: null,
-      tiposVenta: null,
-      promocionesAbonado: null,
     };
   }
 
   const stockByProduct = await aggregateStockByProduct(inventarios);
-  const cortesiasByProduct = aggregateCortesiasFromVentas(ventas);
-  const montoByProduct = aggregateMontoFromDetalle(ventas);
+  const ventasByProduct = aggregateProductoReporteFromVentas(ventas);
   const productos = await buildProductosReporte(
     concesion.id,
     stockByProduct,
-    cortesiasByProduct,
-    montoByProduct,
+    ventasByProduct,
+  );
+  const productoTotales = buildReporteProductoTotales(
+    productos.map((p) => ({
+      cantidadRegular: p.cantidadRegular,
+      cantidadAbonado: p.cantidadAbonado,
+      ventasRegular: p.ventasRegular,
+      ventasAbonado: p.ventasAbonado,
+      cortesias: p.cortesias,
+      puntosCanjeados: p.puntosCanjeados,
+      ventasTotales: p.ventasTotales,
+    })),
   );
 
   return {
     productos,
+    productoTotales,
     resumen,
     ingresos: buildIngresosFromVentas(ventas),
-    tiposVenta: aggregateTiposVentaFromVentas(ventas),
-    promocionesAbonado: aggregatePromociones2x1FromVentas(ventas),
   };
 };
 
 export const buildReporteCortes = async (
   filters: ReporteCortesFilters,
 ): Promise<ReporteCortes> => {
-  let fecha = filters.fecha;
-  let jornadaNumero = filters.jornadaNumero;
+  const resolved = await resolveJornadaParaReporte({
+    jornadaId: filters.jornadaId,
+    fecha: filters.fecha,
+    jornadaNumero: filters.jornadaNumero,
+    concesionId: filters.concesionId,
+    sucursalId: filters.sucursalId,
+  });
 
-  if (!fecha || jornadaNumero == null) {
-    const primaria = await resolveJornadaPrimaria();
-    fecha = fecha ?? primaria.fecha;
-    jornadaNumero = jornadaNumero ?? primaria.jornadaNumero;
-  }
-
-  const fechaNorm = normalizeFecha(fecha);
-  const numero = Number(jornadaNumero);
-  const jornadaId = buildJornadaId(fechaNorm, numero);
-
-  const jornada = { fecha: fechaNorm, numero, jornadaId };
+  const jornada = {
+    fecha: resolved.fecha,
+    numero: resolved.numero,
+    jornadaId: resolved.jornadaId,
+  };
 
   if (filters.concesionId) {
     const concesion = await concessionService.getConcessionById(filters.concesionId);
-    const { productos, resumen, ingresos, tiposVenta, promocionesAbonado } =
+    const { productos, productoTotales, resumen, ingresos } =
       await buildReporteForConcesion(
-      concesion as Record<string, unknown> & { id: string },
-      jornada,
-      filters.sucursalId,
-      true,
-    );
+        concesion as Record<string, unknown> & { id: string },
+        jornada,
+        filters.sucursalId,
+        true,
+      );
     return {
       jornada,
       productos,
+      productoTotales,
       resumen: [resumen],
       ingresos,
-      tiposVenta,
-      promocionesAbonado,
     };
   }
 
@@ -387,9 +351,8 @@ export const buildReporteCortes = async (
   return {
     jornada,
     productos: null,
+    productoTotales: null,
     resumen: resumenRows.sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
     ingresos: null,
-    tiposVenta: null,
-    promocionesAbonado: null,
   };
 };

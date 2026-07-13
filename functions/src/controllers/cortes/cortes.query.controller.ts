@@ -48,6 +48,7 @@ export const getReporteCortes = asyncHandler(
 
     const fecha = req.query.fecha as string | undefined;
     const jornadaRaw = req.query.jornada as string | undefined;
+    const jornadaId = req.query.jornadaId as string | undefined;
     const jornadaNumero =
       jornadaRaw != null && jornadaRaw !== ""
         ? Number(jornadaRaw)
@@ -56,6 +57,7 @@ export const getReporteCortes = asyncHandler(
     const data = await corteReporteService.buildReporteCortes({
       concesionId: concesionId || undefined,
       sucursalId: operational.sucursalId,
+      jornadaId: jornadaId || undefined,
       fecha,
       jornadaNumero:
         jornadaNumero != null && !Number.isNaN(jornadaNumero)
@@ -69,7 +71,11 @@ export const getReporteCortes = asyncHandler(
 
 export const getCortes = asyncHandler(async (req: Request, res: Response) => {
   const filters = getOperationalListFilters(req);
-  const data = await corteService.listCortes(filters);
+  const jornadaId = req.query.jornadaId as string | undefined;
+  const data = await corteService.listCortes({
+    ...filters,
+    jornadaId: jornadaId || undefined,
+  });
   res.status(200).json({ success: true, data, count: data.length });
 });
 
