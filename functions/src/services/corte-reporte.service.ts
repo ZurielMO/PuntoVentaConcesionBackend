@@ -2,10 +2,15 @@ import { firestorePos } from "../config/firebase";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import {
   aggregateProductoReporteFromVentas,
-  aggregateTotalsByMetodoPago,
   buildReporteProductoTotales,
+  listCortes,
   type ReporteProductoTotalesRow,
 } from "./corte.service";
+import {
+  adaptarCortePersistido,
+  calcularComprobantes,
+  type CorteCalculationResult,
+} from "../domain/cortes/corte-calculator";
 import * as concessionService from "./concession.service";
 import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
@@ -37,6 +42,20 @@ export interface ReporteIngresos {
   totalPuntosCanjeados: number;
   ventasConPuntos: number;
   cantidadVentas: number;
+  ventasBrutas?: number;
+  descuentos?: number;
+  ventasNetas?: number;
+  dineroReal?: number;
+  abonados?: unknown;
+  cortesias?: unknown;
+  promociones?: unknown;
+  combos?: unknown;
+  merma?: unknown;
+  cancelaciones?: number;
+  reembolsos?: number;
+  comision?: unknown;
+  ticketPromedio?: number;
+  unidadesVendidas?: number;
 }
 
 export interface ReporteConcesionRow {
@@ -46,6 +65,12 @@ export interface ReporteConcesionRow {
   totalVenta: number;
   comision: number;
   gananciaConcesion: number;
+  /** Cantidad de puntos canjeados. No representa dinero real. */
+  totalPuntosCanjeados: number;
+  /** Valor en MXN cubierto con puntos. Se presenta fuera del dinero real. */
+  valorPuntosCanjeados: number;
+  /** Descuentos de promoción y abonado; no incluye otros beneficios. */
+  descuentos: number;
 }
 
 export interface ReporteCortes {
@@ -59,10 +84,23 @@ export interface ReporteCortes {
 export interface ReporteCortesFilters {
   concesionId?: string;
   sucursalId?: string;
+  cajaId?: string;
+  idUser?: string;
+  inventarioId?: string;
   jornadaId?: string;
   fecha?: string;
   jornadaNumero?: number;
 }
+
+export const selectScopedSnapshot = <T extends Record<string, unknown> & { id: string }>(
+  cuts: T[],
+  filters: Pick<ReporteCortesFilters, "cajaId" | "idUser" | "inventarioId">,
+): T | undefined => cuts.find((row) =>
+  row.estatus === "CERRADO"
+  && Boolean(row.totalesSnapshot)
+  && (["cajaId", "idUser", "inventarioId"] as const).every(
+    (field) => (row[field] ?? null) === (filters[field] ?? null),
+  ));
 
 type StockAgg = {
   inventarioInicial: number;
@@ -190,12 +228,11 @@ const buildProductosReporte = async (
 
 const buildResumenConcesion = (
   concesion: Record<string, unknown> & { id: string },
-  ventas: Array<Record<string, unknown>>,
+  calculation: CorteCalculationResult,
 ): ReporteConcesionRow => {
-  const { totalEfectivo, totalTarjeta } = aggregateTotalsByMetodoPago(ventas);
-  const totalVenta = roundMoney(totalEfectivo + totalTarjeta);
+  const totalVenta = calculation.finanzas.dineroReal;
   const porcentajeComision = Number(concesion.porcentajeComision ?? 0);
-  const comision = roundMoney((totalVenta * porcentajeComision) / 100);
+  const comision = calculation.comision.importeComision;
   const gananciaConcesion = roundMoney(totalVenta - comision);
 
   return {
@@ -205,28 +242,41 @@ const buildResumenConcesion = (
     totalVenta,
     comision,
     gananciaConcesion,
+    totalPuntosCanjeados: calculation.finanzas.cantidadPuntosCanjeados,
+    valorPuntosCanjeados: calculation.finanzas.valorPuntosCanjeados,
+    descuentos: roundMoney(
+      calculation.finanzas.descuentosPromocion + calculation.finanzas.descuentosAbonado,
+    ),
   };
 };
 
 const buildIngresosFromVentas = (
-  ventas: Array<Record<string, unknown>>,
+  calculation: CorteCalculationResult,
 ): ReporteIngresos => {
-  const {
-    totalEfectivo,
-    totalTarjeta,
-    totalPuntosMonto,
-    totalPuntosCanjeados,
-    ventasConPuntos,
-  } = aggregateTotalsByMetodoPago(ventas);
-
   return {
-    ventaNeta: roundMoney(totalEfectivo + totalTarjeta),
-    totalEfectivo,
-    totalTarjeta,
-    totalPuntosMonto,
-    totalPuntosCanjeados,
-    ventasConPuntos,
-    cantidadVentas: ventas.length,
+    ventaNeta: calculation.finanzas.ventasNetas,
+    totalEfectivo: calculation.finanzas.efectivoNeto,
+    totalTarjeta: calculation.finanzas.tarjetaNeta,
+    totalPuntosMonto: calculation.finanzas.valorPuntosCanjeados,
+    totalPuntosCanjeados: calculation.finanzas.cantidadPuntosCanjeados,
+    ventasConPuntos: calculation.finanzas.cantidadVentasConPuntos,
+    cantidadVentas: calculation.finanzas.cantidadTickets,
+    ventasBrutas: calculation.finanzas.ventasBrutas,
+    descuentos: roundMoney(
+      calculation.finanzas.descuentosPromocion + calculation.finanzas.descuentosAbonado,
+    ),
+    ventasNetas: calculation.finanzas.ventasNetas,
+    dineroReal: calculation.finanzas.dineroReal,
+    abonados: calculation.abonados,
+    cortesias: calculation.cortesias,
+    promociones: calculation.promociones,
+    combos: calculation.combos,
+    merma: calculation.merma,
+    cancelaciones: calculation.finanzas.cancelaciones,
+    reembolsos: calculation.finanzas.reembolsos,
+    comision: calculation.comision,
+    ticketPromedio: calculation.finanzas.ticketPromedio,
+    unidadesVendidas: calculation.finanzas.cantidadUnidades,
   };
 };
 
@@ -235,6 +285,7 @@ const buildReporteForConcesion = async (
   jornada: { fecha: string; numero: number; jornadaId: string },
   sucursalId?: string,
   includeDetalle = false,
+  operationalFilters: Pick<ReporteCortesFilters, "cajaId" | "idUser" | "inventarioId"> = {},
 ): Promise<{
   productos: ReporteProductoRow[] | null;
   productoTotales: ReporteProductoTotalesRow | null;
@@ -252,6 +303,9 @@ const buildReporteForConcesion = async (
   const ventasRaw = await detalleVentaService.listDetalleVentas({
     concesionId: concesion.id,
     sucursalId,
+    cajaId: operationalFilters.cajaId,
+    idUser: operationalFilters.idUser,
+    inventarioId: operationalFilters.inventarioId,
   });
   const ventasFiltradas = filterVentasJornada(
     ventasRaw,
@@ -262,7 +316,36 @@ const buildReporteForConcesion = async (
     ventasFiltradas as Array<Record<string, unknown> & { id: string }>,
   );
 
-  const resumen = buildResumenConcesion(concesion, ventas);
+  const liveCalculation = calcularComprobantes(ventas, {
+    porcentajeComision: Number(concesion.porcentajeComision ?? 0),
+  });
+  const cuts = await listCortes({
+    concesionId: concesion.id,
+    sucursalId,
+    cajaId: operationalFilters.cajaId,
+    idUser: operationalFilters.idUser,
+    inventarioId: operationalFilters.inventarioId,
+    jornadaId: jornada.jornadaId,
+    businessDate: jornada.fecha,
+    limit: 200,
+  });
+  const snapshottedCut = selectScopedSnapshot(cuts, operationalFilters);
+  const persisted = snapshottedCut ? adaptarCortePersistido(snapshottedCut) : null;
+  const financialCalculation: CorteCalculationResult = persisted
+    ? {
+        ...liveCalculation,
+        finanzas: persisted.finanzas,
+        metodosPago: persisted.metodosPago,
+        comision: persisted.comision as CorteCalculationResult["comision"],
+        abonados: persisted.abonados as CorteCalculationResult["abonados"],
+        cortesias: persisted.cortesias as CorteCalculationResult["cortesias"],
+        promociones: persisted.promociones as CorteCalculationResult["promociones"],
+        combos: persisted.combos as CorteCalculationResult["combos"],
+        merma: persisted.merma as CorteCalculationResult["merma"],
+        inventario: persisted.inventario as CorteCalculationResult["inventario"],
+      }
+    : liveCalculation;
+  const resumen = buildResumenConcesion(concesion, financialCalculation);
 
   if (!includeDetalle) {
     return {
@@ -296,7 +379,7 @@ const buildReporteForConcesion = async (
     productos,
     productoTotales,
     resumen,
-    ingresos: buildIngresosFromVentas(ventas),
+    ingresos: buildIngresosFromVentas(financialCalculation),
   };
 };
 
@@ -325,6 +408,7 @@ export const buildReporteCortes = async (
         jornada,
         filters.sucursalId,
         true,
+        filters,
       );
     return {
       jornada,
@@ -344,6 +428,7 @@ export const buildReporteCortes = async (
       jornada,
       filters.sucursalId,
       false,
+      filters,
     );
     resumenRows.push(resumen);
   }

@@ -22,6 +22,8 @@ router.use(authMiddleware);
 
 router.get("/resumen", requireAuthenticated, q.getCorteResumen);
 router.get("/reporte", requireAuthenticated, q.getReporteCortes);
+router.get("/dashboard", requireAuthenticated, q.getDashboardCortes);
+router.get("/historial", requireAuthenticated, q.getCortesHistorial);
 router.post(
   "/cerrar",
   requireCorteCreateAccess,

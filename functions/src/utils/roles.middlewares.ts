@@ -4,6 +4,10 @@ import { asyncHandler } from "./error-handler";
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { UserRole } from "../models";
+import {
+  corteDocumentMatchesScope,
+  resolveCorteScope,
+} from "../domain/cortes/corte-scope";
 
 // ---------------------------------------------------------------------------
 // Helpers exportados
@@ -408,30 +412,11 @@ export const requireCorteCreateAccess = (
 export const requireCorteAccess = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
     const user = validateUser(req);
-    if (isSuperAdmin(user)) return next();
-
     const data = await getCorteData(req.params.id);
-    const userConcessionId = getUserConcessionId(user);
-
-    if (isAdmin(user)) {
-      if (!userConcessionId || data.concesionId !== userConcessionId) {
-        throw new ApiError(403, "No tienes acceso a este corte", true, "FORBIDDEN");
-      }
-      return next();
+    const scope = resolveCorteScope(user, {});
+    if (!corteDocumentMatchesScope(scope, data)) {
+      throw new ApiError(403, "No tienes acceso a este corte", true, "FORBIDDEN");
     }
-
-    if (isVendedor(user)) {
-      const userSucursalId = getUserSucursalId(user);
-      if (
-        !userConcessionId ||
-        data.concesionId !== userConcessionId ||
-        (data.sucursalId && userSucursalId && data.sucursalId !== userSucursalId) ||
-        (data.idUser && data.idUser !== user.uid)
-      ) {
-        throw new ApiError(403, "No tienes acceso a este corte", true, "FORBIDDEN");
-      }
-    }
-
     next();
   },
 );

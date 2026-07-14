@@ -2,30 +2,22 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
 import { ApiError } from "../../utils/api-error";
 import * as corteService from "../../services/corte.service";
-import { getOperationalListFiltersAsync } from "../../utils/list-filters.util";
-import {
-  getUserConcessionId,
-  getUserSucursalId,
-} from "../../utils/roles.middlewares";
+import { resolveCorteCloseScope } from "../../services/corte-scope.service";
+import { getUserConcessionId, getUserSucursalId } from "../../utils/roles.middlewares";
+import type { CerrarCorteInput } from "../../middleware/validators/corte.validator";
 
 export const createCorte = asyncHandler(async (req: Request, res: Response) => {
   const user = req.user;
-  if (!user?.uid) {
-    throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
-  }
-
+  if (!user?.uid) throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
   const concesionId = getUserConcessionId(user);
-  if (!concesionId) {
-    throw new ApiError(403, "Usuario sin concesión asignada", true, "FORBIDDEN");
-  }
+  if (!concesionId) throw new ApiError(403, "Usuario sin concesion asignada", true, "FORBIDDEN");
 
-  const ventaId = req.query.idventa as string | undefined;
   const data = await corteService.createCorte(
     {
       concesionId,
       sucursalId: getUserSucursalId(user) ?? null,
       idUser: user.uid,
-      ventaId: ventaId ?? null,
+      ventaId: typeof req.query.idventa === "string" ? req.query.idventa : null,
     },
     req.body,
   );
@@ -39,27 +31,19 @@ export const updateCorte = asyncHandler(async (req: Request, res: Response) => {
 
 export const cerrarCorte = asyncHandler(async (req: Request, res: Response) => {
   const user = req.user;
-  if (!user?.uid) {
-    throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
-  }
-
-  const concesionId = getUserConcessionId(user);
-  if (!concesionId) {
-    throw new ApiError(403, "Usuario sin concesión asignada", true, "FORBIDDEN");
-  }
-
-  const filters = await getOperationalListFiltersAsync(req);
+  if (!user?.uid) throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
+  const closeInput = req.body as CerrarCorteInput;
+  const sesionCajaId = closeInput.sesionCajaId;
+  const scope = await resolveCorteCloseScope(req, sesionCajaId);
   const data = await corteService.cerrarCorte(
-    {
-      concesionId,
-      sucursalId: getUserSucursalId(user) ?? null,
-      idUser: user.uid,
-    },
-    {
-      ...filters,
-      idUser: user.uid,
-    },
-    req.body,
+    { actorUid: user.uid },
+    scope,
+    closeInput,
+    req.get("Idempotency-Key") ?? undefined,
   );
-  res.status(201).json({ success: true, data, message: "Corte cerrado" });
+  res.status(data.idempotentReplay ? 200 : 201).json({
+    success: true,
+    data,
+    message: data.idempotentReplay ? "Corte cerrado recuperado" : "Corte cerrado",
+  });
 });

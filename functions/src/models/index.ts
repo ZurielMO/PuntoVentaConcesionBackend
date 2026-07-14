@@ -187,6 +187,24 @@ export interface Descuento extends BaseEntity {
 }
 
 export interface Corte extends BaseEntity {
+    sesionCajaId?: string | null;
+    jornadaId?: string | null;
+    businessDate?: string | null;
+    timezone?: string | null;
+    calculationVersion?: string | null;
+    generatedAt?: FirebaseFirestore.Timestamp | FirebaseFirestore.FieldValue | string | null;
+    totalesSnapshot?: Record<string, unknown> | null;
+    metodosPagoSnapshot?: Record<string, unknown> | null;
+    productosSnapshot?: Array<Record<string, unknown>> | null;
+    inventarioSnapshot?: Record<string, unknown> | null;
+    comisionSnapshot?: Record<string, unknown> | null;
+    puntosSnapshot?: Record<string, unknown> | null;
+    abonadosSnapshot?: Record<string, unknown> | null;
+    cortesiasSnapshot?: Record<string, unknown> | null;
+    mermaSnapshot?: Record<string, unknown> | null;
+    promocionesSnapshot?: Record<string, unknown> | null;
+    combosSnapshot?: Record<string, unknown> | null;
+    conteoComprobantes?: number | null;
     ventaId: string | null;
     idUser: string | null;
     concesionId: string;
