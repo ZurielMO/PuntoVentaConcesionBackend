@@ -69,4 +69,6 @@ jobs:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Deploy Cloud Functions
-        run: npx firebase-tools@latest deploy --only functions --project puntoventacl --non-interactive
+        # Solo apiV2 (Gen2). No usar --only functions mientras Gen1 `api` siga en el proyecto:
+        # en non-interactive el CLI aborta al detectar functions huérfanas.
+        run: npx firebase-tools@latest deploy --only functions:apiV2 --project puntoventacl --non-interactive
