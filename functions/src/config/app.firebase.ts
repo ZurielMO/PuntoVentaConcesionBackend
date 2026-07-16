@@ -86,11 +86,12 @@ function getOrCreateApp(
   const config: admin.AppOptions = {
     projectId,
     storageBucket,
+    // En Cloud Functions sin JSON inline, usa ADC del runtime SA
+    // (debe tener roles/datastore.user en app-oficial-leon).
+    credential: serviceAccount
+      ? admin.credential.cert(serviceAccount)
+      : admin.credential.applicationDefault(),
   };
-
-  if (serviceAccount) {
-    config.credential = admin.credential.cert(serviceAccount);
-  }
 
   return admin.initializeApp(config, APP_NAME);
 }
@@ -110,5 +111,7 @@ export const USUARIOS_APP_COLLECTION = "usuariosApp";
 console.log(
   "🔥 APP_OFICIAL:",
   appOficial.options.projectId,
-  hasAppOficialCredentials ? "(con credenciales)" : "(SIN credenciales)",
+  hasAppOficialCredentials
+    ? "(service account JSON)"
+    : "(ADC / runtime SA — requiere IAM en app-oficial-leon)",
 );
