@@ -22,7 +22,10 @@ import {
   createZonaSchema,
   updateZonaSchema,
 } from "../middleware/validators/zona.validator";
-import { upsertInventarioProductoSchema } from "../middleware/validators/inventario.validator";
+import {
+  ajustarInventarioProductoSchema,
+  upsertInventarioProductoSchema,
+} from "../middleware/validators/inventario.validator";
 import {
   createTicketSchema,
   updateTicketSchema,
@@ -119,6 +122,7 @@ const swaggerDefinition = {
       CreateZona: z2j(createZonaSchema),
       UpdateZona: z2j(updateZonaSchema),
       UpsertInventarioProducto: z2j(upsertInventarioProductoSchema),
+      AjustarInventarioProducto: z2j(ajustarInventarioProductoSchema),
       CreateTicket: z2j(createTicketSchema),
       UpdateTicket: z2j(updateTicketSchema),
       CreateCorte: z2j(createCorteSchema),
@@ -347,6 +351,19 @@ const swaggerDefinition = {
       get: { tags: ["Inventarios"], summary: "Obtener producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], responses: { 200: ok("OK") } },
       put: { tags: ["Inventarios"], summary: "Upsert producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], requestBody: json("UpsertInventarioProducto"), responses: { 200: ok("OK") } },
       delete: { tags: ["Inventarios"], summary: "Eliminar producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], responses: { 204: ok("Eliminado") } },
+    },
+    "/inventarios/{id}/productos/{productoId}/ajustes": {
+      post: {
+        tags: ["Inventarios"],
+        summary: "Ajuste de stock (entrada/salida)",
+        security: bearer,
+        parameters: [
+          idParam,
+          { in: "path", name: "productoId", required: true, schema: { type: "string" } },
+        ],
+        requestBody: json("AjustarInventarioProducto"),
+        responses: { 200: ok("Ajuste aplicado") },
+      },
     },
     "/tickets": {
       get: { tags: ["Tickets"], summary: "Listar", security: bearer, responses: { 200: ok("Lista") } },

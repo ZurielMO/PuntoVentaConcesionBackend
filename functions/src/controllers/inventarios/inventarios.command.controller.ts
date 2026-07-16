@@ -55,6 +55,18 @@ export const upsertInventarioProducto = asyncHandler(
   },
 );
 
+export const ajustarInventarioProducto = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await inventarioService.ajustarInventarioProducto(
+      req.params.id,
+      req.params.productoId,
+      req.body,
+      { idUser: req.user?.uid },
+    );
+    res.status(200).json({ success: true, data, message: "Ajuste aplicado" });
+  },
+);
+
 export const deleteInventarioProducto = asyncHandler(
   async (req: Request, res: Response) => {
     await inventarioService.deleteInventarioProducto(

@@ -27,6 +27,10 @@ export interface ReporteProductoRow {
   cortesias: number;
   puntosCanjeados: number;
   ventasTotales: number;
+  /** Precio de lista actual del catálogo */
+  precioActual: number;
+  /** Descuento unitario abonado (precio lista − precio abonado efectivo) */
+  descuentoAbonado: number;
 }
 
 export interface ReporteIngresos {
@@ -161,6 +165,15 @@ const buildProductosReporte = async (
     const catalogProduct = catalog.find((p) => p.id === productoId);
     const stock = stockByProduct.get(productoId);
     const ventas = ventasByProduct.get(productoId);
+    const precioActual = Number(catalogProduct?.precio ?? 0);
+    const cantidadAbonado = ventas?.cantidadAbonado ?? 0;
+    const ventasAbonado = ventas?.ventasAbonado ?? 0;
+    const precioAbonadoUnitario =
+      cantidadAbonado > 0 ? ventasAbonado / cantidadAbonado : 0;
+    const descuentoAbonado =
+      precioActual > 0 && precioAbonadoUnitario > 0
+        ? roundMoney(Math.max(0, precioActual - precioAbonadoUnitario))
+        : 0;
 
     rows.push({
       productoId,
@@ -168,12 +181,14 @@ const buildProductosReporte = async (
       inventarioInicial: stock?.inventarioInicial ?? 0,
       inventarioFinal: stock?.inventarioFinal ?? 0,
       cantidadRegular: ventas?.cantidadRegular ?? 0,
-      cantidadAbonado: ventas?.cantidadAbonado ?? 0,
+      cantidadAbonado,
       ventasRegular: ventas?.ventasRegular ?? 0,
-      ventasAbonado: ventas?.ventasAbonado ?? 0,
+      ventasAbonado,
       cortesias: ventas?.cortesias ?? 0,
       puntosCanjeados: ventas?.puntosCanjeados ?? 0,
       ventasTotales: ventas?.ventasTotales ?? 0,
+      precioActual,
+      descuentoAbonado,
     });
   }
 
@@ -263,13 +278,14 @@ const buildReporteForConcesion = async (
   );
 
   const resumen = buildResumenConcesion(concesion, ventas);
+  const ingresos = buildIngresosFromVentas(ventas);
 
   if (!includeDetalle) {
     return {
       productos: null,
       productoTotales: null,
       resumen,
-      ingresos: null,
+      ingresos,
     };
   }
 
@@ -296,7 +312,7 @@ const buildReporteForConcesion = async (
     productos,
     productoTotales,
     resumen,
-    ingresos: buildIngresosFromVentas(ventas),
+    ingresos,
   };
 };
 
@@ -337,22 +353,51 @@ export const buildReporteCortes = async (
 
   const concesiones = await concessionService.listConcessions();
   const resumenRows: ReporteConcesionRow[] = [];
+  const ingresosAgg: ReporteIngresos = {
+    ventaNeta: 0,
+    totalEfectivo: 0,
+    totalTarjeta: 0,
+    totalPuntosMonto: 0,
+    totalPuntosCanjeados: 0,
+    ventasConPuntos: 0,
+    cantidadVentas: 0,
+  };
 
   for (const concesion of concesiones) {
-    const { resumen } = await buildReporteForConcesion(
+    const { resumen, ingresos } = await buildReporteForConcesion(
       concesion as Record<string, unknown> & { id: string },
       jornada,
       filters.sucursalId,
       false,
     );
     resumenRows.push(resumen);
+    if (ingresos) {
+      ingresosAgg.totalEfectivo = roundMoney(
+        ingresosAgg.totalEfectivo + ingresos.totalEfectivo,
+      );
+      ingresosAgg.totalTarjeta = roundMoney(
+        ingresosAgg.totalTarjeta + ingresos.totalTarjeta,
+      );
+      ingresosAgg.totalPuntosMonto = roundMoney(
+        ingresosAgg.totalPuntosMonto + ingresos.totalPuntosMonto,
+      );
+      ingresosAgg.totalPuntosCanjeados = roundMoney(
+        ingresosAgg.totalPuntosCanjeados + ingresos.totalPuntosCanjeados,
+      );
+      ingresosAgg.ventasConPuntos += ingresos.ventasConPuntos;
+      ingresosAgg.cantidadVentas += ingresos.cantidadVentas;
+    }
   }
+
+  ingresosAgg.ventaNeta = roundMoney(
+    ingresosAgg.totalEfectivo + ingresosAgg.totalTarjeta,
+  );
 
   return {
     jornada,
     productos: null,
     productoTotales: null,
     resumen: resumenRows.sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
-    ingresos: null,
+    ingresos: ingresosAgg,
   };
 };

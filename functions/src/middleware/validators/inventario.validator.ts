@@ -15,3 +15,15 @@ export const upsertInventarioProductoSchema = z
 export type UpsertInventarioProductoInput = z.infer<
   typeof upsertInventarioProductoSchema
 >;
+
+export const ajustarInventarioProductoSchema = z
+  .object({
+    direccion: z.enum(["entrada", "salida"]),
+    cantidad: z.number().positive(),
+    motivo: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+export type AjustarInventarioProductoInput = z.infer<
+  typeof ajustarInventarioProductoSchema
+>;

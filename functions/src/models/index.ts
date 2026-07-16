@@ -96,6 +96,7 @@ export interface InventarioMovimiento extends BaseEntity {
     cajaNombre?: string | null;
     idUser?: string | null;
     ventaId?: string | null;
+    motivo?: string | null;
 }
 
 export interface Inventario extends BaseEntity {

@@ -40,11 +40,24 @@ export const listCortes = async (filters: CorteListFilters = {}) => {
 
   if (filters.jornadaId) {
     const prefix = `${filters.jornadaId}__`;
+    const fechaFromJornada = filters.jornadaId.match(
+      /^(\d{4}-\d{2}-\d{2})__J\d+$/,
+    )?.[1];
     results = results.filter((row) => {
       const c = row as Record<string, unknown>;
       if (c.jornadaId === filters.jornadaId) return true;
       const invId = String(c.inventarioId ?? "");
-      return invId.startsWith(prefix);
+      if (invId.startsWith(prefix)) return true;
+      // Legacy cortes sin jornadaId/inventarioId: match by fecha
+      if (
+        fechaFromJornada &&
+        !c.jornadaId &&
+        !c.inventarioId &&
+        String(c.fecha ?? "") === fechaFromJornada
+      ) {
+        return true;
+      }
+      return false;
     });
   }
 

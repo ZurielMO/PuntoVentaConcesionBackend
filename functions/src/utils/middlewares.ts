@@ -52,6 +52,16 @@ export const requireFirebaseReady = (
  */
 export const authMiddleware = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      throw new ApiError(
+        401,
+        "No autenticado: falta el token Bearer",
+        true,
+        "UNAUTHENTICATED",
+      );
+    }
+
     if (
       !hasAppOficialCredentials &&
       !hasAdminCredentials &&
@@ -62,16 +72,6 @@ export const authMiddleware = asyncHandler(
         "Servicio no disponible: faltan credenciales de app-oficial-leon (SERVICE_ACCOUNT_APP_OFICIAL).",
         true,
         "FIREBASE_NOT_CONFIGURED",
-      );
-    }
-
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      throw new ApiError(
-        401,
-        "No autenticado: falta el token Bearer",
-        true,
-        "UNAUTHENTICATED",
       );
     }
 

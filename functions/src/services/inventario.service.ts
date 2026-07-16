@@ -58,6 +58,7 @@ export interface LogMovimientoInput {
   cajaNombre?: string | null;
   idUser?: string | null;
   ventaId?: string | null;
+  motivo?: string | null;
 }
 
 export const logMovimiento = async (
@@ -390,6 +391,87 @@ export const upsertInventarioProducto = async (
       idUser: context?.idUser ?? null,
     });
   }
+
+  const doc = await ref.get();
+  return toData(doc);
+};
+
+export type AjusteDireccion = "entrada" | "salida";
+
+export const ajustarInventarioProducto = async (
+  inventarioId: string,
+  productoId: string,
+  data: {
+    direccion: AjusteDireccion;
+    cantidad: number;
+    motivo?: string;
+  },
+  context?: { idUser?: string },
+) => {
+  const invDoc = await col().doc(inventarioId).get();
+  if (!invDoc.exists) {
+    throw new ApiError(404, "Inventario no encontrado", true, "NOT_FOUND");
+  }
+
+  const ref = productosCol(inventarioId).doc(productoId);
+  const existing = await ref.get();
+  if (!existing.exists) {
+    throw new ApiError(
+      404,
+      "Producto de inventario no encontrado. Usa Cargar producto para el inventario inicial.",
+      true,
+      "NOT_FOUND",
+    );
+  }
+
+  const prev = existing.data() ?? {};
+  const prevInicial = Number(prev.cantidad_inicial ?? 0);
+  const prevFinal = Number(prev.cantidad_final ?? prevInicial);
+  const cantidad = Number(data.cantidad);
+
+  if (!Number.isFinite(cantidad) || cantidad <= 0) {
+    throw new ApiError(
+      400,
+      "La cantidad del ajuste debe ser mayor a 0",
+      true,
+      "INVALID_CANTIDAD",
+    );
+  }
+
+  const delta = data.direccion === "entrada" ? cantidad : -cantidad;
+  const cantidadFinal = prevFinal + delta;
+
+  if (cantidadFinal < 0) {
+    throw new ApiError(
+      400,
+      `Stock insuficiente: disponible ${prevFinal}, salida ${cantidad}`,
+      true,
+      "INSUFFICIENT_STOCK",
+    );
+  }
+
+  await ref.set(
+    {
+      cantidad_final: cantidadFinal,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  const motivo =
+    typeof data.motivo === "string" && data.motivo.trim()
+      ? data.motivo.trim()
+      : null;
+
+  await logMovimiento(inventarioId, {
+    tipo: "AJUSTE",
+    producto_id: productoId,
+    cantidad: delta,
+    cantidad_anterior: prevFinal,
+    cantidad_nueva: cantidadFinal,
+    idUser: context?.idUser ?? null,
+    motivo,
+  });
 
   const doc = await ref.get();
   return toData(doc);
