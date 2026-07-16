@@ -64,6 +64,8 @@ export const listCortes = async (filters: CorteListFilters = {}) => {
   return results;
 };
 
+//Prueba deploy de variables y workflow
+
 export const getCorteById = async (id: string) => {
   const doc = await col().doc(id).get();
   if (!doc.exists) {
