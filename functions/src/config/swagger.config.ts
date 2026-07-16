@@ -83,7 +83,7 @@ const swaggerDefinition = {
       variables: {
         protocol: { default: "https", enum: ["http", "https"] },
         host: {
-          default: "us-central1-puntoventacl.cloudfunctions.net",
+          default: "us-central1-puntoventacl.cloudfunctions.net/apiV2",
         },
       },
     },
