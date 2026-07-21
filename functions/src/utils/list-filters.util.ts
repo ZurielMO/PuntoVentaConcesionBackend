@@ -42,10 +42,14 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
   if (!concesionId) return { concesionId: "__none__" };
 
   if (isVendedor(user)) {
+    const queryCajaId = req.query.cajaId as string | undefined;
     return {
       concesionId,
       sucursalId: getUserSucursalId(user),
-      cajaId: (user.cajaId as string | undefined) ?? undefined,
+      cajaId:
+        queryCajaId?.trim() ||
+        (user.cajaId as string | undefined) ||
+        undefined,
       inventarioId: req.query.inventarioId as string | undefined,
     };
   }
@@ -72,15 +76,20 @@ export const getOperationalListFiltersAsync = async (
 
   const sucursalId = base.sucursalId;
   const inventarioId = base.inventarioId;
+  const queryCajaId = (req.query.cajaId as string | undefined)?.trim() || undefined;
   const fallbackCajaId = (user.cajaId as string | null | undefined) ?? null;
 
+  if (queryCajaId) {
+    return { ...base, cajaId: queryCajaId };
+  }
+
   if (!sucursalId || !inventarioId) {
-    return { ...base, cajaId: fallbackCajaId ?? base.cajaId };
+    return { ...base, cajaId: base.cajaId ?? fallbackCajaId ?? undefined };
   }
 
   const invDoc = await inventariosCol().doc(inventarioId).get();
   if (!invDoc.exists) {
-    return { ...base, cajaId: fallbackCajaId ?? base.cajaId };
+    return { ...base, cajaId: base.cajaId ?? fallbackCajaId ?? undefined };
   }
 
   const inv = invDoc.data() ?? {};
@@ -98,6 +107,6 @@ export const getOperationalListFiltersAsync = async (
 
   return {
     ...base,
-    cajaId: resolved?.cajaId ?? fallbackCajaId ?? undefined,
+    cajaId: resolved?.cajaId ?? base.cajaId ?? fallbackCajaId ?? undefined,
   };
 };

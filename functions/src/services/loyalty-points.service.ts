@@ -2,6 +2,7 @@ import axios from "axios";
 import { FieldValue } from "firebase-admin/firestore";
 import { firestoreApp } from "../config/app.firebase";
 import {
+  buildBackendClApiUrl,
   getBackendClBearerToken,
   invalidateBackendClAuthCache,
 } from "./backendcl-auth.service";
@@ -9,9 +10,6 @@ import { ApiError } from "../utils/api-error";
 
 const USUARIOS_APP_COLLECTION = "usuariosApp";
 const MOVIMIENTOS_PUNTOS_SUBCOLLECTION = "movimientos_puntos";
-
-const DEFAULT_BACKENDCL_BASE_URL =
-  "https://us-central1-e-comerce-leon.cloudfunctions.net/api";
 
 export interface ClubMemberData {
   id: string;
@@ -44,11 +42,24 @@ export const PUNTOS_POR_PESO_CANJE = 10;
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100;
 
-export const calcularMontoDesdePuntos = (puntos: number): number =>
-  roundMoney(puntos / PUNTOS_POR_PESO_CANJE);
+/**
+ * Canje always uses whole pesos only: floor points to multiples of
+ * PUNTOS_POR_PESO_CANJE (183 → 180 pts → $18; leave 3 unused).
+ */
+export const puntosUsablesParaCanje = (puntos: number): number => {
+  const truncados = Math.max(0, Math.trunc(puntos));
+  return Math.floor(truncados / PUNTOS_POR_PESO_CANJE) * PUNTOS_POR_PESO_CANJE;
+};
 
-export const calcularPuntosNecesariosParaTotal = (total: number): number =>
-  Math.ceil(total * PUNTOS_POR_PESO_CANJE);
+/** Money from points; only complete-peso multiples count (183 → 18). */
+export const calcularMontoDesdePuntos = (puntos: number): number =>
+  puntosUsablesParaCanje(puntos) / PUNTOS_POR_PESO_CANJE;
+
+/** Max points redeemable toward total, capped at whole pesos (floor). */
+export const calcularPuntosNecesariosParaTotal = (total: number): number => {
+  const pesosEnteros = Math.max(0, Math.floor(Number(total) || 0));
+  return pesosEnteros * PUNTOS_POR_PESO_CANJE;
+};
 
 export const calcularCanjePuntos = (params: {
   total: number;
@@ -57,22 +68,16 @@ export const calcularCanjePuntos = (params: {
 }): { puntosUsados: number; montoPuntos: number; restante: number } => {
   const { total, puntosDisponibles } = params;
   const maxPuntos = calcularPuntosNecesariosParaTotal(total);
-  const solicitados = params.puntosSolicitados ?? maxPuntos;
-  const puntosUsados = Math.min(
-    Math.max(0, Math.trunc(solicitados)),
-    Math.max(0, Math.trunc(puntosDisponibles)),
-    maxPuntos,
-  );
+  const disponiblesUsables = puntosUsablesParaCanje(puntosDisponibles);
+  const solicitadosUsables =
+    params.puntosSolicitados == null
+      ? maxPuntos
+      : puntosUsablesParaCanje(params.puntosSolicitados);
+  const puntosUsados = Math.min(solicitadosUsables, disponiblesUsables, maxPuntos);
   const montoPuntos = calcularMontoDesdePuntos(puntosUsados);
   const restante = roundMoney(Math.max(0, total - montoPuntos));
   return { puntosUsados, montoPuntos, restante };
 };
-
-const getBackendClBaseUrl = (): string =>
-  (process.env.BACKENDCL_API_BASE_URL || DEFAULT_BACKENDCL_BASE_URL).replace(
-    /\/+$/,
-    "",
-  );
 
 const backendClHeaders = async () => ({
   Authorization: `Bearer ${await getBackendClBearerToken()}`,
@@ -217,13 +222,30 @@ export const recordPosRedemptionMovement = async (params: {
 export const calcularPuntosPorVenta = (total: number): number =>
   Math.round(total * 0.1);
 
+/**
+ * True when the sale should earn loyalty points.
+ * Any points redemption (puntos / puntos+efectivo / puntos+tarjeta) earns 0.
+ */
+export const ventaAcumulaPuntos = (params: {
+  metodoPago?: string | null;
+  puntosUsados?: number | null;
+}): boolean => {
+  const puntosUsados = Math.max(0, Math.trunc(Number(params.puntosUsados) || 0));
+  const metodo = String(params.metodoPago ?? "").trim().toLowerCase();
+  if (puntosUsados > 0) return false;
+  if (metodo === "puntos" || metodo.startsWith("puntos+")) return false;
+  return true;
+};
+
 export const getClubMember = async (memberId: string): Promise<ClubMemberData> => {
   const trimmedId = memberId.trim();
   if (!trimmedId) {
     throw new ApiError(400, "ID de socio inválido", true, "INVALID_MEMBER_ID");
   }
 
-  const url = `${getBackendClBaseUrl()}/api/usuarios/${encodeURIComponent(trimmedId)}`;
+  const url = buildBackendClApiUrl(
+    `/api/usuarios/${encodeURIComponent(trimmedId)}`,
+  );
 
   try {
     const resp = await withBackendClAuthRetry((headers) =>
@@ -286,7 +308,7 @@ export const createRedemptionHold = async (params: {
 
   const descripcion = `Canje POS ${ventaId}`;
   const idempotencyKey = `pos-redeem:${ventaId}`;
-  const createUrl = `${getBackendClBaseUrl()}/api/loyalty/v1/redemptions`;
+  const createUrl = buildBackendClApiUrl("/api/loyalty/v1/redemptions");
 
   try {
     const createResp = await withBackendClAuthRetry((headers) =>
@@ -339,9 +361,11 @@ export const confirmRedemptionHold = async (params: {
   descripcion: string;
 }): Promise<RedeemPointsBySaleResult> => {
   const idempotencyKey = `pos-redeem:${params.ventaId}:confirm`;
-  const confirmUrl = `${getBackendClBaseUrl()}/api/loyalty/v1/redemptions/${encodeURIComponent(
-    params.redemptionId,
-  )}/confirm`;
+  const confirmUrl = buildBackendClApiUrl(
+    `/api/loyalty/v1/redemptions/${encodeURIComponent(
+      params.redemptionId,
+    )}/confirm`,
+  );
 
   try {
     const confirmResp = await withBackendClAuthRetry((headers) =>
@@ -393,9 +417,11 @@ export const cancelRedemptionHold = async (params: {
   redemptionId: string;
   ventaId: string;
 }): Promise<void> => {
-  const cancelUrl = `${getBackendClBaseUrl()}/api/loyalty/v1/redemptions/${encodeURIComponent(
-    params.redemptionId,
-  )}/cancel`;
+  const cancelUrl = buildBackendClApiUrl(
+    `/api/loyalty/v1/redemptions/${encodeURIComponent(
+      params.redemptionId,
+    )}/cancel`,
+  );
 
   try {
     await withBackendClAuthRetry((headers) =>
@@ -434,9 +460,9 @@ export const assignPointsBySale = async (params: {
   const puntosAsignados = calcularPuntosPorVenta(total);
   const descripcion = `Venta POS ${ventaId}`;
 
-  const url = `${getBackendClBaseUrl()}/api/usuarios/${encodeURIComponent(
-    trimmedId,
-  )}/puntos/asignar-por-venta`;
+  const url = buildBackendClApiUrl(
+    `/api/usuarios/${encodeURIComponent(trimmedId)}/puntos/asignar-por-venta`,
+  );
 
   try {
     const resp = await withBackendClAuthRetry((headers) =>

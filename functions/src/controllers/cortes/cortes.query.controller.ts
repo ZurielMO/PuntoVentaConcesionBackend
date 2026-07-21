@@ -8,12 +8,8 @@ import {
 
 export const getCorteResumen = asyncHandler(
   async (req: Request, res: Response) => {
-    const user = req.user;
     const filters = await getOperationalListFiltersAsync(req);
-    const data = await corteService.buildCorteResumen({
-      ...filters,
-      idUser: user?.uid as string | undefined,
-    });
+    const data = await corteService.buildCorteResumen(filters);
     res.status(200).json({ success: true, data });
   },
 );

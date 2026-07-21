@@ -186,7 +186,7 @@ export const assignConcessionPoints = async (
 
   const baseUrl =
     process.env.CONCESSION_POINTS_ASSIGN_URL ||
-    "https://us-central1-e-comerce-leon.cloudfunctions.net/api/api/usuarios";
+    "https://us-central1-e-comerce-leon.cloudfunctions.net/api/usuarios";
   const url = `${baseUrl.replace(/\/+$/, "")}/${encodeURIComponent(
     userId,
   )}/puntos/asignar`;

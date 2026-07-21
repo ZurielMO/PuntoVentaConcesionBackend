@@ -6,6 +6,10 @@ import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import * as comboService from "./combo.service";
 import type { OperationalListFilters } from "../utils/list-filters.util";
+import {
+  findCorteCerradoHoy,
+  todayIsoDate,
+} from "./corte-guard.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.CORTES);
 
@@ -18,6 +22,7 @@ export interface CorteListFilters {
   concesionId?: string;
   sucursalId?: string;
   idUser?: string;
+  cajaId?: string;
 }
 
 export const listCortes = async (filters: CorteListFilters = {}) => {
@@ -28,7 +33,9 @@ export const listCortes = async (filters: CorteListFilters = {}) => {
   if (filters.sucursalId) {
     query = query.where("sucursalId", "==", filters.sucursalId);
   }
-  if (filters.idUser) {
+  if (filters.cajaId) {
+    query = query.where("cajaId", "==", filters.cajaId);
+  } else if (filters.idUser) {
     query = query.where("idUser", "==", filters.idUser);
   }
   const snap = await query.get();
@@ -49,6 +56,8 @@ export const createCorte = async (
     sucursalId?: string | null;
     idUser: string;
     ventaId?: string | null;
+    cajaId?: string | null;
+    cajaNombre?: string | null;
   },
   data: {
     fecha: string;
@@ -65,6 +74,7 @@ export const createCorte = async (
     productos?: CorteResumenProducto[];
     promociones2x1?: CorteResumenPromociones2x1;
     combos?: CorteResumenCombos;
+    fierabonados?: CorteResumenFierabonados;
     efectivoContado?: number | null;
     diferenciaCaja?: number | null;
   },
@@ -74,6 +84,8 @@ export const createCorte = async (
     idUser: context.idUser,
     concesionId: context.concesionId,
     sucursalId: context.sucursalId ?? null,
+    cajaId: context.cajaId ?? null,
+    cajaNombre: context.cajaNombre ?? null,
     fecha: data.fecha,
     comentarios: data.comentarios ?? null,
     estatus: data.estatus,
@@ -88,6 +100,7 @@ export const createCorte = async (
     productos: data.productos ?? null,
     promociones2x1: data.promociones2x1 ?? null,
     combos: data.combos ?? null,
+    fierabonados: data.fierabonados ?? null,
     efectivoContado: data.efectivoContado ?? null,
     diferenciaCaja: data.diferenciaCaja ?? null,
     createdAt: FieldValue.serverTimestamp(),
@@ -136,6 +149,13 @@ export interface CorteResumenPromociones2x1 {
   cantidadTransacciones: number;
 }
 
+export interface CorteResumenFierabonados {
+  cantidadUnidades: number;
+  montoTotal: number;
+  montoDescuento: number;
+  cantidadTransacciones: number;
+}
+
 export interface CorteResumenComboLinea {
   comboId: string;
   nombre: string;
@@ -162,6 +182,7 @@ export interface CorteResumen {
   productos: CorteResumenProducto[];
   promociones2x1: CorteResumenPromociones2x1;
   combos: CorteResumenCombos;
+  fierabonados: CorteResumenFierabonados;
   /** Efectivo físico contado al cerrar (arqueo). null si el corte no está cerrado. */
   efectivoContado: number | null;
   /** efectivoContado - totalEfectivo. Positivo = sobrante, negativo = faltante. */
@@ -306,7 +327,10 @@ export const aggregatePromociones2x1FromVentas = (
 
   for (const venta of ventas) {
     const abonado = venta.abonado as Record<string, unknown> | null | undefined;
-    if (!abonado || Number(abonado.montoDescuento ?? 0) <= 0) {
+    if (!abonado || String(abonado.benefitId ?? "") !== ICE_2X1_BENEFIT_ID) {
+      continue;
+    }
+    if (Number(abonado.montoDescuento ?? 0) <= 0) {
       continue;
     }
 
@@ -322,6 +346,53 @@ export const aggregatePromociones2x1FromVentas = (
     montoTotal,
     montoDescuento,
     unidadesGratis,
+    cantidadTransacciones,
+  };
+};
+
+/** @internal exported for unit tests */
+export const aggregateFierabonadosFromVentas = (
+  ventas: Array<Record<string, unknown>>,
+): CorteResumenFierabonados => {
+  let cantidadUnidades = 0;
+  let montoTotal = 0;
+  let montoDescuento = 0;
+  let cantidadTransacciones = 0;
+
+  for (const venta of ventas) {
+    const abonado = venta.abonado as Record<string, unknown> | null | undefined;
+    if (
+      !abonado ||
+      String(abonado.benefitId ?? "") !== CERVEZA_ABONADO_BENEFIT_ID
+    ) {
+      continue;
+    }
+
+    const descuento = Number(abonado.montoDescuento ?? 0);
+    const total = Number(abonado.montoTotal ?? 0);
+    if (descuento <= 0 && total <= 0) {
+      continue;
+    }
+
+    cantidadTransacciones += 1;
+    montoTotal = roundMoney(montoTotal + total);
+    montoDescuento = roundMoney(montoDescuento + descuento);
+
+    const lineas = Array.isArray(venta.lineasVenta)
+      ? (venta.lineasVenta as Array<Record<string, unknown>>)
+      : [];
+    for (const linea of lineas) {
+      if (linea.combo) continue;
+      if (linea.producto) {
+        cantidadUnidades += Number(linea.cantidad ?? 0);
+      }
+    }
+  }
+
+  return {
+    cantidadUnidades,
+    montoTotal,
+    montoDescuento,
     cantidadTransacciones,
   };
 };
@@ -371,7 +442,8 @@ export const aggregateCombosFromVentas = (
   return { montoTotal, cantidadVendidos, items };
 };
 
-const todayIsoDate = () => new Date().toISOString().slice(0, 10);
+export const ICE_2X1_BENEFIT_ID = "ice-2x1";
+export const CERVEZA_ABONADO_BENEFIT_ID = "cerveza-precio-abonado";
 
 /**
  * Arqueo de caja: compara el efectivo contado físicamente con el esperado.
@@ -390,25 +462,6 @@ export const computeDiferenciaCaja = (
     efectivoContado: contado,
     diferenciaCaja: roundMoney(contado - totalEfectivo),
   };
-};
-
-const findCorteCerradoHoy = async (filters: OperationalListFilters) => {
-  let query: FirebaseFirestore.Query = col().where("estatus", "==", "CERRADO");
-  if (filters.concesionId) {
-    query = query.where("concesionId", "==", filters.concesionId);
-  }
-  if (filters.sucursalId) {
-    query = query.where("sucursalId", "==", filters.sucursalId);
-  }
-  if (filters.idUser) {
-    query = query.where("idUser", "==", filters.idUser);
-  }
-
-  const fecha = todayIsoDate();
-  const snap = await query.get();
-  const match = snap.docs.find((doc) => doc.data().fecha === fecha);
-  if (!match) return null;
-  return toData(match);
 };
 
 export const buildCorteResumen = async (
@@ -446,6 +499,7 @@ export const buildCorteResumen = async (
 
   const promociones2x1 = aggregatePromociones2x1FromVentas(ventas);
   const combos = aggregateCombosFromVentas(ventas, comboNames);
+  const fierabonados = aggregateFierabonadosFromVentas(ventas);
 
   const {
     totalEfectivo,
@@ -497,6 +551,8 @@ export const buildCorteResumen = async (
         (doc.promociones2x1 as CorteResumenPromociones2x1 | null) ??
         promociones2x1,
       combos: (doc.combos as CorteResumenCombos | null) ?? combos,
+      fierabonados:
+        (doc.fierabonados as CorteResumenFierabonados | null) ?? fierabonados,
       efectivoContado:
         doc.efectivoContado != null ? Number(doc.efectivoContado) : null,
       diferenciaCaja:
@@ -519,6 +575,7 @@ export const buildCorteResumen = async (
     productos,
     promociones2x1,
     combos,
+    fierabonados,
     efectivoContado: null,
     diferenciaCaja: null,
     cajaNombre,
@@ -537,6 +594,15 @@ export const cerrarCorte = async (
   filters: OperationalListFilters,
   data: { comentarios?: string; efectivoContado?: number } = {},
 ) => {
+  if (!filters.cajaId) {
+    throw new ApiError(
+      400,
+      "Debes tener una caja asignada para cerrar el corte",
+      true,
+      "MISSING_CAJA",
+    );
+  }
+
   const resumen = await buildCorteResumen(filters);
   if (resumen.corteCerrado) {
     throw new ApiError(
@@ -562,6 +628,8 @@ export const cerrarCorte = async (
       sucursalId: context.sucursalId ?? null,
       idUser: context.idUser,
       ventaId: null,
+      cajaId: filters.cajaId ?? null,
+      cajaNombre: resumen.cajaNombre,
     },
     {
       fecha: todayIsoDate(),
@@ -578,6 +646,7 @@ export const cerrarCorte = async (
       productos: resumen.productos,
       promociones2x1: resumen.promociones2x1,
       combos: resumen.combos,
+      fierabonados: resumen.fierabonados,
       efectivoContado,
       diferenciaCaja,
     },

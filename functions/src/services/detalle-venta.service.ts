@@ -16,8 +16,10 @@ import {
   confirmRedemptionHold,
   createRedemptionHold,
   getClubMember,
+  PUNTOS_POR_PESO_CANJE,
 } from "./loyalty-points.service";
 import type { ComboProducto } from "../models";
+import { assertVentaPermitidaConCorte } from "./corte-guard.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.COMPROBANTES_VENTA);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -359,6 +361,14 @@ const validatePagoConPuntos = async (params: {
   }
 
   const member = await getClubMember(trimmedMemberId);
+  if (puntosUsados % PUNTOS_POR_PESO_CANJE !== 0) {
+    throw new ApiError(
+      400,
+      "Los puntos a canjear deben ser múltiplos de 10 (pesos enteros)",
+      true,
+      "INVALID_POINTS",
+    );
+  }
   const canje = calcularCanjePuntos({
     total,
     puntosDisponibles: member.puntosActuales,
@@ -434,6 +444,12 @@ export const createDetalleVenta = async (params: {
     idUser: params.idUser,
     sucursalId: params.sucursalId,
     inventarioId: params.inventarioId,
+  });
+
+  await assertVentaPermitidaConCorte({
+    concesionId: params.concesionId,
+    sucursalId: params.sucursalId,
+    cajaId: caja.cajaId,
   });
 
   const lineas = mergeResolvedLineas(
@@ -670,13 +686,50 @@ export const getDetalleVentaById = async (id: string) => {
   return { ...toData(doc), detalle: detalleSnap.docs.map(toData) };
 };
 
-export const listDetalleVentas = async (filters: {
+/** Lookup by business ventaId (e.g. V-123), not Firestore doc id. */
+export const findComprobanteByVentaId = async (
+  ventaId: string,
+): Promise<(Record<string, unknown> & { id: string }) | null> => {
+  const trimmed = ventaId.trim();
+  if (!trimmed) return null;
+
+  const snap = await col().where("ventaId", "==", trimmed).limit(1).get();
+  if (snap.empty) return null;
+  return toData(snap.docs[0]);
+};
+
+export type DetalleVentaListFilters = {
   concesionId?: string;
   sucursalId?: string;
   idUser?: string;
   cajaId?: string;
   inventarioId?: string;
-}) => {
+};
+
+/** @internal exported for unit tests */
+export const filterComprobantesByListFilters = <T extends Record<string, unknown>>(
+  results: T[],
+  filters: DetalleVentaListFilters,
+): T[] => {
+  let filtered = results;
+
+  if (filters.inventarioId && filters.concesionId) {
+    filtered = filtered.filter((r) => r.inventarioId === filters.inventarioId);
+  }
+  if (filters.sucursalId) {
+    filtered = filtered.filter((r) => r.sucursalId === filters.sucursalId);
+  }
+  if (filters.cajaId) {
+    filtered = filtered.filter((r) => r.cajaId === filters.cajaId);
+  }
+  if (filters.idUser) {
+    filtered = filtered.filter((r) => r.idUser === filters.idUser);
+  }
+
+  return filtered;
+};
+
+export const listDetalleVentas = async (filters: DetalleVentaListFilters) => {
   let query: FirebaseFirestore.Query = col();
   if (filters.concesionId) {
     query = query.where("concesionId", "==", filters.concesionId);
@@ -687,18 +740,7 @@ export const listDetalleVentas = async (filters: {
   const snap = await query.get();
   let results = snap.docs.map(toData);
 
-  if (filters.inventarioId && filters.concesionId) {
-    results = results.filter((r) => r.inventarioId === filters.inventarioId);
-  }
-  if (filters.sucursalId) {
-    results = results.filter((r) => r.sucursalId === filters.sucursalId);
-  }
-  if (filters.cajaId) {
-    results = results.filter((r) => r.cajaId === filters.cajaId);
-  }
-  if (filters.idUser) {
-    results = results.filter((r) => r.idUser === filters.idUser);
-  }
+  results = filterComprobantesByListFilters(results, filters);
 
   results.sort((a, b) => {
     const ta = (a.fecha as { _seconds?: number })?._seconds

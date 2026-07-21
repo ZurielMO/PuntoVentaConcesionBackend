@@ -55,10 +55,7 @@ export const cerrarCorte = asyncHandler(async (req: Request, res: Response) => {
       sucursalId: getUserSucursalId(user) ?? null,
       idUser: user.uid,
     },
-    {
-      ...filters,
-      idUser: user.uid,
-    },
+    filters,
     req.body,
   );
   res.status(201).json({ success: true, data, message: "Corte cerrado" });

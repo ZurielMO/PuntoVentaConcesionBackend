@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
+import { getUserConcessionId } from "../../utils/roles.middlewares";
 import * as loyaltyPointsService from "../../services/loyalty-points.service";
 import * as abonadoService from "../../services/abonado.service";
 
@@ -22,6 +23,10 @@ export const getClubMember = asyncHandler(async (req: Request, res: Response) =>
 });
 
 export const getAbonado = asyncHandler(async (req: Request, res: Response) => {
-  const abonado = await abonadoService.verifyAbonado(req.params.memberId);
+  const concesionId = getUserConcessionId(req.user);
+  const abonado = await abonadoService.verifyAbonado(
+    req.params.memberId,
+    concesionId,
+  );
   res.status(200).json({ success: true, data: abonado });
 });

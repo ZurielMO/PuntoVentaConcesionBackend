@@ -6,10 +6,12 @@ import {
 } from "../config/app.firebase";
 import {
   ABONADO_BENEFITS_CATALOG,
-  ABONADO_BENEFIT_ONCE_PER_VENTA,
   AbonadoBenefitDefinition,
+  filterBenefitsForConcesion,
   getBenefitDefinition,
+  isOnceOnlyBenefit,
 } from "../config/abonado-benefits.config";
+import { getConcessionNombre } from "./concession.service";
 import { ApiError } from "../utils/api-error";
 
 type SeasonPassVerification = {
@@ -30,6 +32,9 @@ export interface AbonadoBenefitStatus {
   tipo: AbonadoBenefitDefinition["tipo"];
   productNameTokens: string[];
   productIds: string[];
+  concesionIds: string[];
+  concesionNombreTokens: string[];
+  subscriberPrice?: number;
   disponible: boolean;
   consumidoAt?: string;
   consumidoVentaId?: string;
@@ -87,10 +92,11 @@ const serializeTimestamp = (value: unknown): string | undefined => {
 
 const buildBenefitStatuses = (
   verification: SeasonPassVerification | undefined,
+  definitions: AbonadoBenefitDefinition[],
 ): AbonadoBenefitStatus[] => {
   const consumed = verification?.posBeneficiosConsumidos ?? {};
 
-  return ABONADO_BENEFITS_CATALOG.map((definition) => {
+  return definitions.map((definition) => {
     const usage = consumed[definition.id];
     const consumidoAt = serializeTimestamp(usage?.consumedAt);
 
@@ -101,8 +107,12 @@ const buildBenefitStatuses = (
       tipo: definition.tipo,
       productNameTokens: definition.productNameTokens,
       productIds: definition.productIds ?? [],
-      // TEMP: revert to once per jornada after testing
-      disponible: ABONADO_BENEFIT_ONCE_PER_VENTA || !consumidoAt,
+      concesionIds: definition.concesionIds ?? [],
+      concesionNombreTokens: definition.concesionNombreTokens ?? [],
+      subscriberPrice: definition.subscriberPrice,
+      // onceOnly (ICE 2x1): unavailable after first consume.
+      // Permanent benefits (cerveza abonado): always disponible.
+      disponible: !isOnceOnlyBenefit(definition) || !consumidoAt,
       consumidoAt,
       consumidoVentaId: usage?.ventaId,
     };
@@ -122,6 +132,7 @@ const assertAppOficialReady = (): void => {
 
 export const verifyAbonado = async (
   memberId: string,
+  concesionId?: string | null,
 ): Promise<AbonadoVerificationResult> => {
   assertAppOficialReady();
 
@@ -156,6 +167,15 @@ export const verifyAbonado = async (
     "Abonado";
   const email = (data.email as string | undefined)?.trim() ?? "";
 
+  const concesionNombre = concesionId
+    ? await getConcessionNombre(concesionId)
+    : null;
+  const scopedDefinitions = filterBenefitsForConcesion(
+    ABONADO_BENEFITS_CATALOG,
+    concesionId,
+    concesionNombre,
+  );
+
   return {
     memberId: userDocument.snap.id,
     nombre,
@@ -163,7 +183,7 @@ export const verifyAbonado = async (
     isSubscriber: true,
     event: verification?.event,
     season: verification?.season,
-    benefits: buildBenefitStatuses(verification),
+    benefits: buildBenefitStatuses(verification, scopedDefinitions),
   };
 };
 
@@ -210,8 +230,8 @@ export const consumeAbonadoBenefit = async (params: {
     );
   }
 
-  // TEMP: revert to once per jornada after testing — skip consume tracking
-  if (ABONADO_BENEFIT_ONCE_PER_VENTA) {
+  // Permanent benefits (e.g. cerveza precio abonado): no once-only tracking.
+  if (!isOnceOnlyBenefit(definition)) {
     return {
       memberId: userDocument.snap.id,
       benefitId,

@@ -2,9 +2,16 @@ import {
   aggregateTotalsByMetodoPago,
   aggregateProductosFromVentas,
   aggregatePromociones2x1FromVentas,
+  aggregateFierabonadosFromVentas,
   aggregateCombosFromVentas,
   computeDiferenciaCaja,
+  CERVEZA_ABONADO_BENEFIT_ID,
+  ICE_2X1_BENEFIT_ID,
 } from "../src/services/corte.service";
+import {
+  assertNoCorteCerradoForVenta,
+  CORTE_CLOSED_VENTA_MESSAGE,
+} from "../src/services/corte-guard.service";
 
 describe("computeDiferenciaCaja", () => {
   it("calcula sobrante cuando lo contado supera lo esperado", () => {
@@ -294,7 +301,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 80,
           abonado: {
-            benefitId: "ice-2x1",
+            benefitId: ICE_2X1_BENEFIT_ID,
             titulo: "ICE 2x1",
             montoTotal: 80,
             montoDescuento: 40,
@@ -304,7 +311,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 50,
           abonado: {
-            benefitId: "ice-2x1",
+            benefitId: ICE_2X1_BENEFIT_ID,
             titulo: "ICE 2x1",
             montoTotal: 120,
             montoDescuento: 40,
@@ -318,6 +325,28 @@ describe("aggregatePromociones2x1FromVentas", () => {
       montoDescuento: 80,
       unidadesGratis: 2,
       cantidadTransacciones: 2,
+    });
+  });
+
+  it("ignora precio abonado cerveza (no es 2x1)", () => {
+    expect(
+      aggregatePromociones2x1FromVentas([
+        {
+          total: 450,
+          abonado: {
+            benefitId: CERVEZA_ABONADO_BENEFIT_ID,
+            titulo: "Precio abonado cerveza",
+            montoTotal: 450,
+            montoDescuento: 200,
+            unidadesGratis: 0,
+          },
+        },
+      ]),
+    ).toEqual({
+      montoTotal: 0,
+      montoDescuento: 0,
+      unidadesGratis: 0,
+      cantidadTransacciones: 0,
     });
   });
 
@@ -341,6 +370,56 @@ describe("aggregatePromociones2x1FromVentas", () => {
       unidadesGratis: 0,
       cantidadTransacciones: 0,
     });
+  });
+});
+
+describe("aggregateFierabonadosFromVentas", () => {
+  it("suma cervezas vendidas a precio abonado", () => {
+    expect(
+      aggregateFierabonadosFromVentas([
+        {
+          total: 450,
+          abonado: {
+            benefitId: CERVEZA_ABONADO_BENEFIT_ID,
+            titulo: "Precio abonado cerveza",
+            montoTotal: 450,
+            montoDescuento: 200,
+            unidadesGratis: 0,
+          },
+          lineasVenta: [
+            { producto: "cerveza1", cantidad: 5, precio_actual: 90 },
+          ],
+        },
+        {
+          total: 80,
+          abonado: {
+            benefitId: ICE_2X1_BENEFIT_ID,
+            titulo: "ICE 2x1",
+            montoTotal: 80,
+            montoDescuento: 40,
+            unidadesGratis: 1,
+          },
+        },
+      ]),
+    ).toEqual({
+      cantidadUnidades: 5,
+      montoTotal: 450,
+      montoDescuento: 200,
+      cantidadTransacciones: 1,
+    });
+  });
+});
+
+describe("assertNoCorteCerradoForVenta", () => {
+  it("rechaza venta si hay corte cerrado hoy", () => {
+    expect(() => assertNoCorteCerradoForVenta({ id: "corte-1" })).toThrow(
+      CORTE_CLOSED_VENTA_MESSAGE,
+    );
+  });
+
+  it("permite venta si no hay corte cerrado hoy", () => {
+    expect(() => assertNoCorteCerradoForVenta(null)).not.toThrow();
+    expect(() => assertNoCorteCerradoForVenta(undefined)).not.toThrow();
   });
 });
 

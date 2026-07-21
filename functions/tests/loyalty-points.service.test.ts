@@ -29,6 +29,7 @@ import {
   getClubMember,
   PUNTOS_POR_PESO_CANJE,
   recordPosRedemptionMovement,
+  ventaAcumulaPuntos,
 } from "../src/services/loyalty-points.service";
 
 jest.mock("axios");
@@ -61,10 +62,33 @@ describe("loyalty-points.service", () => {
     expect(calcularPuntosPorVenta(80)).toBe(8);
   });
 
-  it("calcula canje con 10 puntos por peso", () => {
+  it("ventaAcumulaPuntos es false cuando se pagan puntos (incl. mixtos)", () => {
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "efectivo", puntosUsados: 0 }),
+    ).toBe(true);
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "tarjeta", puntosUsados: 0 }),
+    ).toBe(true);
+    expect(ventaAcumulaPuntos({ metodoPago: "puntos", puntosUsados: 800 })).toBe(
+      false,
+    );
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "puntos+efectivo", puntosUsados: 500 }),
+    ).toBe(false);
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "puntos+tarjeta", puntosUsados: 400 }),
+    ).toBe(false);
+    expect(ventaAcumulaPuntos({ metodoPago: "efectivo", puntosUsados: 10 })).toBe(
+      false,
+    );
+  });
+
+  it("calcula canje con 10 puntos por peso (pesos enteros)", () => {
     expect(PUNTOS_POR_PESO_CANJE).toBe(10);
     expect(calcularPuntosNecesariosParaTotal(80)).toBe(800);
+    expect(calcularPuntosNecesariosParaTotal(90.5)).toBe(900);
     expect(calcularMontoDesdePuntos(500)).toBe(50);
+    expect(calcularMontoDesdePuntos(183)).toBe(18);
     expect(
       calcularCanjePuntos({ total: 80, puntosDisponibles: 500 }),
     ).toEqual({
@@ -78,6 +102,41 @@ describe("loyalty-points.service", () => {
       puntosUsados: 800,
       montoPuntos: 80,
       restante: 0,
+    });
+  });
+
+  it("redondea canje hacia pesos enteros (floor): 183 pts → 180 / $18", () => {
+    expect(
+      calcularCanjePuntos({ total: 90, puntosDisponibles: 183 }),
+    ).toEqual({
+      puntosUsados: 180,
+      montoPuntos: 18,
+      restante: 72,
+    });
+    expect(
+      calcularCanjePuntos({
+        total: 90,
+        puntosDisponibles: 183,
+        puntosSolicitados: 183,
+      }),
+    ).toEqual({
+      puntosUsados: 180,
+      montoPuntos: 18,
+      restante: 72,
+    });
+    expect(
+      calcularCanjePuntos({ total: 18.5, puntosDisponibles: 185 }),
+    ).toEqual({
+      puntosUsados: 180,
+      montoPuntos: 18,
+      restante: 0.5,
+    });
+    expect(
+      calcularCanjePuntos({ total: 90, puntosDisponibles: 9 }),
+    ).toEqual({
+      puntosUsados: 0,
+      montoPuntos: 0,
+      restante: 90,
     });
   });
 
@@ -104,7 +163,7 @@ describe("loyalty-points.service", () => {
     });
 
     expect(mockedAxios.get).toHaveBeenCalledWith(
-      "https://example.test/api/api/usuarios/uid-1",
+      "https://example.test/api/usuarios/uid-1",
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: "Bearer test-jwt-token",
@@ -160,10 +219,10 @@ describe("loyalty-points.service", () => {
     expect(result.puntosActuales).toBe(420);
 
     expect(mockedAxios.post.mock.calls[0][0]).toBe(
-      "https://example.test/api/api/loyalty/v1/redemptions",
+      "https://example.test/api/loyalty/v1/redemptions",
     );
     expect(mockedAxios.post.mock.calls[1][0]).toBe(
-      "https://example.test/api/api/loyalty/v1/redemptions/red-1/confirm",
+      "https://example.test/api/loyalty/v1/redemptions/red-1/confirm",
     );
     expect(mockMovSet).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -239,7 +298,7 @@ describe("loyalty-points.service", () => {
 
     const [url, body] = mockedAxios.post.mock.calls[0];
     expect(url).toBe(
-      "https://example.test/api/api/usuarios/uid-2/puntos/asignar-por-venta",
+      "https://example.test/api/usuarios/uid-2/puntos/asignar-por-venta",
     );
     expect(body).toEqual({
       dinero: 320,

@@ -189,6 +189,8 @@ export interface Corte extends BaseEntity {
     idUser: string | null;
     concesionId: string;
     sucursalId?: string | null;
+    cajaId?: string | null;
+    cajaNombre?: string | null;
     fecha: string;
     comentarios: string | null;
     estatus: string;
