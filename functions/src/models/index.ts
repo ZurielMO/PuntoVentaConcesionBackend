@@ -4,6 +4,8 @@
 export enum UserRole {
     SUPERADMIN = "SUPERADMIN",
     ADMIN = "ADMIN",
+    /** Admin de una sucursal de concesión tipo CERVECERIA (sin vendedores; cierra por conteo). */
+    ADMIN_CERVECERIA = "ADMIN_CERVECERIA",
     VENDEDOR = "VENDEDOR",
 }
 
@@ -28,6 +30,8 @@ export interface User extends BaseEntity {
     cajaId?: string | null;
 }
 
+export type ConcessionTipo = "CERVECERIA" | "GENERAL";
+
 export interface Concession extends BaseEntity {
     nombre: string;
     activo: boolean;
@@ -35,6 +39,8 @@ export interface Concession extends BaseEntity {
     idUser?: string | null;
     /** Porcentaje de comisión del operador sobre venta neta (0–100). */
     porcentajeComision?: number | null;
+    /** Tipo de concesión. Default GENERAL; CERVECERIA habilita admins de sucursal cervecería. */
+    tipo?: ConcessionTipo;
 }
 
 export interface Zona extends BaseEntity {
@@ -53,8 +59,12 @@ export interface Sucursal extends BaseEntity {
     zona_id: string;
     nombre: string | null;
     activo: boolean;
+    /** Modo de operación: POS clásico o cierre por conteo (Admin Cervecería). Default POS. */
+    modo_operacion?: SucursalModoOperacion;
     cajas?: Caja[];
 }
+
+export type SucursalModoOperacion = "POS" | "CONTEO";
 
 export interface Product extends BaseEntity {
     concesion_id: string;

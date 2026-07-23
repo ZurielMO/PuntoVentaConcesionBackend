@@ -16,3 +16,10 @@ export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
   await userService.softDeleteUser(req.params.id);
   res.status(204).send();
 });
+
+export const hardDeleteUser = asyncHandler(
+  async (req: Request, res: Response) => {
+    await userService.hardDeleteUser(req.params.id, req.user?.uid);
+    res.status(204).send();
+  },
+);

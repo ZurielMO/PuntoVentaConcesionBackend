@@ -7,12 +7,15 @@ const porcentajeComisionField = z
   .optional()
   .default(0);
 
+const tipoConcesionField = z.enum(["CERVECERIA", "GENERAL"]).optional();
+
 export const createConcessionSchema = z
   .object({
     nombre: z.string().min(1).max(200),
     activo: z.boolean().optional().default(true),
     imagenes: z.array(z.string().url()).optional().default([]),
     porcentajeComision: porcentajeComisionField,
+    tipo: tipoConcesionField.default("GENERAL"),
   })
   .strict();
 
@@ -24,6 +27,8 @@ export const replaceConcessionSchema = z
     // Enviar [] limpia el logo a propósito.
     imagenes: z.array(z.string().url()).optional(),
     porcentajeComision: porcentajeComisionField,
+    // Omitido = conservar tipo existente.
+    tipo: tipoConcesionField,
   })
   .strict();
 

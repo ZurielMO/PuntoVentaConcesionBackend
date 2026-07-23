@@ -17,6 +17,7 @@ export const getUserRole = (user: Express.AuthenticatedUser | undefined): UserRo
   if (!rol) return undefined;
   if (rol === "EMPLEADO" || rol === "CONCESION_VENDEDOR") return UserRole.VENDEDOR;
   if (rol === "CONCESION_SUPERADMIN") return UserRole.SUPERADMIN;
+  if (rol === "CONCESION_ADMIN_CERVECERIA") return UserRole.ADMIN_CERVECERIA;
   if (rol === "CONCESION_ADMIN") return UserRole.ADMIN;
   return rol as UserRole | undefined;
 };
@@ -28,6 +29,11 @@ export const isSuperAdmin = (user: Express.AuthenticatedUser | undefined): boole
 
 export const isAdmin = (user: Express.AuthenticatedUser | undefined): boolean =>
   getUserRole(user) === UserRole.ADMIN;
+
+/** Admin de sucursal de cervecería: permisos de admin, acotados a su sucursal. */
+export const isAdminCerveceria = (
+  user: Express.AuthenticatedUser | undefined,
+): boolean => getUserRole(user) === UserRole.ADMIN_CERVECERIA;
 
 export const isVendedor = (user: Express.AuthenticatedUser | undefined): boolean =>
   getUserRole(user) === UserRole.VENDEDOR;
@@ -117,7 +123,7 @@ export const requireAdminOrSuperAdmin = (
   next: NextFunction,
 ): void => {
   const user = validateUser(req);
-  if (!isSuperAdmin(user) && !isAdmin(user)) {
+  if (!isSuperAdmin(user) && !isAdmin(user) && !isAdminCerveceria(user)) {
     throw new ApiError(403, "Se requiere rol ADMIN o SUPERADMIN", true, "FORBIDDEN");
   }
   next();
@@ -163,7 +169,7 @@ export const requireSucursalReadAccess = asyncHandler(
     const sucursalId = req.params.id || req.params.sucursalId;
     if (!sucursalId) return next();
 
-    if (isVendedor(user)) {
+    if (isVendedor(user) || isAdminCerveceria(user)) {
       const userSucursalId = getUserSucursalId(user);
       if (!userSucursalId || userSucursalId !== sucursalId) {
         throw new ApiError(403, "No tienes acceso a esta sucursal", true, "FORBIDDEN");
@@ -228,7 +234,7 @@ export const requireProductCreateAccess = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
     const user = validateUser(req);
     if (isSuperAdmin(user)) return next();
-    if (!isAdmin(user)) {
+    if (!isAdmin(user) && !isAdminCerveceria(user)) {
       throw new ApiError(403, "No tienes permisos administrativos", true, "FORBIDDEN");
     }
 
@@ -257,7 +263,7 @@ export const requireProductWriteAccess = asyncHandler(
   async (req: Request, _res: Response, next: NextFunction) => {
     const user = validateUser(req);
     if (isSuperAdmin(user)) return next();
-    if (!isAdmin(user)) {
+    if (!isAdmin(user) && !isAdminCerveceria(user)) {
       throw new ApiError(403, "No tienes permisos administrativos", true, "FORBIDDEN");
     }
 
@@ -351,7 +357,7 @@ export const requireDetalleVentaCreateAccess = asyncHandler(
       );
     }
 
-    if (isVendedor(user)) {
+    if (isVendedor(user) || isAdminCerveceria(user)) {
       const userSucursalId = getUserSucursalId(user);
       if (!userSucursalId || userSucursalId !== sucursalId) {
         throw new ApiError(403, "Solo puedes vender en tu sucursal asignada", true, "FORBIDDEN");
@@ -415,6 +421,18 @@ export const requireCorteAccess = asyncHandler(
 
     if (isAdmin(user)) {
       if (!userConcessionId || data.concesionId !== userConcessionId) {
+        throw new ApiError(403, "No tienes acceso a este corte", true, "FORBIDDEN");
+      }
+      return next();
+    }
+
+    if (isAdminCerveceria(user)) {
+      const userSucursalId = getUserSucursalId(user);
+      if (
+        !userConcessionId ||
+        data.concesionId !== userConcessionId ||
+        (data.sucursalId && userSucursalId && data.sucursalId !== userSucursalId)
+      ) {
         throw new ApiError(403, "No tienes acceso a este corte", true, "FORBIDDEN");
       }
       return next();
@@ -486,6 +504,18 @@ export const requireTicketAccess = asyncHandler(
 
     if (isAdmin(user)) {
       if (!userConcessionId || data.concesionId !== userConcessionId) {
+        throw new ApiError(403, "No tienes acceso a este ticket", true, "FORBIDDEN");
+      }
+      return next();
+    }
+
+    if (isAdminCerveceria(user)) {
+      const userSucursalId = getUserSucursalId(user);
+      if (
+        !userConcessionId ||
+        data.concesionId !== userConcessionId ||
+        (data.sucursalId && userSucursalId && data.sucursalId !== userSucursalId)
+      ) {
         throw new ApiError(403, "No tienes acceso a este ticket", true, "FORBIDDEN");
       }
       return next();

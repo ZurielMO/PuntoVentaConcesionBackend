@@ -26,11 +26,13 @@ const buildCorsOptions = (): CorsOptions => {
 
   return {
     origin(origin, callback) {
+      // No lanzar Error: el errorHandler responde 500 sin headers CORS y el
+      // navegador solo muestra "No Access-Control-Allow-Origin".
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
         return;
       }
-      callback(new Error(`Origen no permitido por CORS: ${origin}`));
+      callback(null, false);
     },
     credentials: true,
   };

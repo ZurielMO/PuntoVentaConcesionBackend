@@ -16,6 +16,7 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown
   return {
     ...data,
     porcentajeComision: Number(data.porcentajeComision ?? 0),
+    tipo: data.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL",
   };
 };
 
@@ -69,6 +70,7 @@ export const createConcession = async (
     activo?: boolean;
     imagenes?: string[];
     porcentajeComision?: number;
+    tipo?: "CERVECERIA" | "GENERAL";
   },
   idUser?: string,
 ) => {
@@ -77,6 +79,7 @@ export const createConcession = async (
     activo: data.activo ?? true,
     imagenes: data.imagenes ?? [],
     porcentajeComision: data.porcentajeComision ?? 0,
+    tipo: data.tipo ?? "GENERAL",
     idUser: idUser ?? null,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -93,6 +96,7 @@ export const replaceConcession = async (
     activo?: boolean;
     imagenes?: string[];
     porcentajeComision?: number;
+    tipo?: "CERVECERIA" | "GENERAL";
   },
 ) => {
   const ref = col().doc(id);
@@ -113,6 +117,7 @@ export const replaceConcession = async (
     idUser: existing.idUser ?? null,
     porcentajeComision:
       data.porcentajeComision ?? existing.porcentajeComision ?? 0,
+    tipo: data.tipo ?? existing.tipo ?? "GENERAL",
     createdAt: existing.createdAt ?? FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });

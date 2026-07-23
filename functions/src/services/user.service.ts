@@ -55,6 +55,7 @@ const assertConcessionExists = async (concesionId: string) => {
   if (!doc.exists || doc.data()?.activo === false) {
     throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
   }
+  return doc.data() ?? {};
 };
 
 const assertSucursalBelongsToConcession = async (
@@ -73,6 +74,7 @@ const assertSucursalBelongsToConcession = async (
       "INVALID_SUCURSAL",
     );
   }
+  return doc.data() ?? {};
 };
 
 /** Una caja solo puede tener un vendedor asignado. */
@@ -138,7 +140,38 @@ const validateUserBusinessRules = async (
     );
   }
 
-  await assertConcessionExists(data.concesionId);
+  const concession = await assertConcessionExists(data.concesionId);
+
+  if (rol === UserRole.ADMIN_CERVECERIA) {
+    if (concession.tipo !== "CERVECERIA") {
+      throw new ApiError(
+        400,
+        "ADMIN_CERVECERIA solo puede asignarse a concesiones tipo CERVECERIA",
+        true,
+        "INVALID_CONCESSION_TIPO",
+      );
+    }
+    if (!data.sucursalId) {
+      throw new ApiError(
+        400,
+        "ADMIN_CERVECERIA requiere sucursalId",
+        true,
+        "MISSING_SUCURSAL",
+      );
+    }
+    const sucursal = await assertSucursalBelongsToConcession(
+      data.sucursalId,
+      data.concesionId,
+    );
+    if (sucursal.modo_operacion !== "CONTEO") {
+      throw new ApiError(
+        400,
+        "ADMIN_CERVECERIA solo puede asignarse a sucursales en modo corte por conteo",
+        true,
+        "INVALID_SUCURSAL_MODO",
+      );
+    }
+  }
 
   if (rol === UserRole.VENDEDOR) {
     if (!data.sucursalId) {
@@ -270,7 +303,10 @@ export const createUser = async (data: {
     docData.edad = null;
   }
 
-  if (internalRole === UserRole.VENDEDOR && data.sucursalId) {
+  const requiereSucursal =
+    internalRole === UserRole.VENDEDOR ||
+    internalRole === UserRole.ADMIN_CERVECERIA;
+  if (requiereSucursal && data.sucursalId) {
     docData.sucursalId = data.sucursalId;
   } else {
     docData.sucursalId = null;
@@ -346,8 +382,9 @@ export const updateUser = async (
     );
   }
 
-  const effectiveSucursalId =
-    mergedRol === UserRole.VENDEDOR ? mergedSucursalId : null;
+  const usesSucursal =
+    mergedRol === UserRole.VENDEDOR || mergedRol === UserRole.ADMIN_CERVECERIA;
+  const effectiveSucursalId = usesSucursal ? mergedSucursalId : null;
   const effectiveCajaId =
     mergedRol === UserRole.VENDEDOR ? mergedCajaId : null;
 
@@ -509,4 +546,34 @@ export const softDeleteUser = async (id: string) => {
   } catch {
     // Si el usuario no existe en Auth, continuamos con el soft delete lógico.
   }
+};
+
+/** Eliminación física en Auth (app-oficial) y Firestore usuariosApp. */
+export const hardDeleteUser = async (id: string, actorUid?: string) => {
+  const ref = usuariosCol().doc(id);
+  const doc = await ref.get();
+  if (!doc.exists || doc.data()?.from_concesion !== true) {
+    throw new ApiError(404, "Usuario no encontrado", true, "NOT_FOUND");
+  }
+  const uid = (doc.data()?.uid as string) || id;
+
+  if (actorUid && (actorUid === id || actorUid === uid)) {
+    throw new ApiError(
+      400,
+      "No puedes eliminar tu propio usuario",
+      true,
+      "CANNOT_DELETE_SELF",
+    );
+  }
+
+  try {
+    await authAppOficial.deleteUser(uid);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== "auth/user-not-found") {
+      throw error;
+    }
+  }
+
+  await ref.delete();
 };

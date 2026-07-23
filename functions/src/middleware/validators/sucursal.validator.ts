@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const modoOperacionField = z.enum(["POS", "CONTEO"]).optional();
+
 export const createSucursalSchema = z
   .object({
     activo: z.boolean().optional().default(true),
@@ -7,6 +9,7 @@ export const createSucursalSchema = z
       .object({
         nombre: z.string().min(1).optional(),
         cajas: z.array(z.string().min(1)).optional().default([]),
+        modo_operacion: modoOperacionField,
       })
       .strict(),
   })
@@ -20,6 +23,7 @@ export const updateSucursalSchema = z
       .object({
         nombre: z.string().min(1).optional(),
         cajas: z.array(z.string().min(1)).optional(),
+        modo_operacion: modoOperacionField,
       })
       .strict()
       .optional(),

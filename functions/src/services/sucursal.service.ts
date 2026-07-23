@@ -189,13 +189,17 @@ const setCajasLegacy = async (sucursalId: string, cajas: string[]) => {
 export const createSucursal = async (
   concesionId: string,
   zonaId: string,
-  data: { activo?: boolean; sucursal: { nombre?: string; cajas?: string[] } },
+  data: {
+    activo?: boolean;
+    sucursal: { nombre?: string; cajas?: string[]; modo_operacion?: "POS" | "CONTEO" };
+  },
 ) => {
   const payload = {
     concesion_id: concesionId,
     zona_id: zonaId,
     nombre: data.sucursal.nombre ?? null,
     activo: data.activo ?? true,
+    modo_operacion: data.sucursal.modo_operacion ?? "POS",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -214,7 +218,7 @@ export const updateSucursal = async (
   data: {
     activo?: boolean;
     zona_id?: string;
-    sucursal?: { nombre?: string; cajas?: string[] };
+    sucursal?: { nombre?: string; cajas?: string[]; modo_operacion?: "POS" | "CONTEO" };
   },
 ) => {
   const ref = col().doc(id);
@@ -229,6 +233,9 @@ export const updateSucursal = async (
   if (data.activo !== undefined) update.activo = data.activo;
   if (data.zona_id !== undefined) update.zona_id = data.zona_id;
   if (data.sucursal?.nombre !== undefined) update.nombre = data.sucursal.nombre;
+  if (data.sucursal?.modo_operacion !== undefined) {
+    update.modo_operacion = data.sucursal.modo_operacion;
+  }
 
   await ref.update(update);
 

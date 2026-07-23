@@ -1,10 +1,11 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { firestorePos } from "../config/firebase";
-import { COLLECTIONS } from "../config/firestore.constants";
+import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import * as comboService from "./combo.service";
+import * as inventarioService from "./inventario.service";
 import { buildJornadaId } from "./asignacion-caja.service";
 import { resolveJornadaPrimaria } from "./jornada.service";
 import type { OperationalListFilters } from "../utils/list-filters.util";
@@ -100,6 +101,7 @@ export const createCorte = async (
     diferenciaCaja?: number | null;
     jornadaId?: string | null;
     inventarioId?: string | null;
+    tipoCorte?: string | null;
   },
 ) => {
   const payload = {
@@ -125,6 +127,7 @@ export const createCorte = async (
     combos: data.combos ?? null,
     efectivoContado: data.efectivoContado ?? null,
     diferenciaCaja: data.diferenciaCaja ?? null,
+    tipoCorte: data.tipoCorte ?? null,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -851,6 +854,217 @@ export const buildCorteResumen = async (
     corteCerrado: false,
     corteId: null,
   };
+};
+
+export interface ConteoFinalProducto {
+  productoId: string;
+  cantidadFinal: number;
+}
+
+/**
+ * Cierre de día por conteo físico (sucursales de cervecería sin vendedores):
+ * el admin captura el inventario final de cada producto y la venta se calcula
+ * como (cantidad_inicial - cantidad_final) x precio.
+ */
+export const cerrarCortePorConteo = async (
+  context: {
+    concesionId: string;
+    sucursalId: string;
+    idUser: string;
+  },
+  data: {
+    productos: ConteoFinalProducto[];
+    comentarios?: string;
+    efectivoContado?: number;
+  },
+) => {
+  const sucursalDoc = await firestorePos
+    .collection(COLLECTIONS.SUCURSALES)
+    .doc(context.sucursalId)
+    .get();
+  if (!sucursalDoc.exists) {
+    throw new ApiError(404, "Sucursal no encontrada", true, "NOT_FOUND");
+  }
+  if (sucursalDoc.data()?.modo_operacion !== "CONTEO") {
+    throw new ApiError(
+      400,
+      "La sucursal no opera con corte por conteo",
+      true,
+      "INVALID_SUCURSAL_MODO",
+    );
+  }
+
+  const yaCerrado = await findCorteCerradoHoy({
+    concesionId: context.concesionId,
+    sucursalId: context.sucursalId,
+  });
+  if (yaCerrado) {
+    throw new ApiError(
+      409,
+      "Ya existe un corte cerrado para hoy",
+      true,
+      "CORTE_ALREADY_CLOSED",
+    );
+  }
+
+  const { inventario } = await inventarioService.getInventarioJornadaActiva(
+    context.sucursalId,
+    true,
+  );
+  if (!inventario) {
+    throw new ApiError(
+      404,
+      "No hay inventario de jornada activa para la sucursal",
+      true,
+      "NO_ACTIVE_INVENTORY",
+    );
+  }
+
+  const inv = inventario as Record<string, unknown> & { id: string };
+  if (inv.concesion_id && inv.concesion_id !== context.concesionId) {
+    throw new ApiError(
+      403,
+      "El inventario no pertenece a tu concesión",
+      true,
+      "FORBIDDEN",
+    );
+  }
+
+  const invProductos = (
+    Array.isArray(inv.productos) ? inv.productos : []
+  ) as Array<Record<string, unknown> & { id: string }>;
+
+  const invByProducto = new Map<string, Record<string, unknown> & { id: string }>();
+  for (const prod of invProductos) {
+    invByProducto.set(String(prod.producto_id ?? prod.id), prod);
+  }
+
+  const conteoByProducto = new Map<string, number>();
+  for (const item of data.productos) {
+    if (!invByProducto.has(item.productoId)) {
+      throw new ApiError(
+        400,
+        `El producto ${item.productoId} no está en el inventario de la jornada`,
+        true,
+        "INVALID_PRODUCT",
+      );
+    }
+    conteoByProducto.set(item.productoId, Number(item.cantidadFinal));
+  }
+
+  const catalog = await productService.listProducts(context.concesionId, true);
+  const catalogById = new Map<string, Record<string, unknown>>();
+  for (const product of catalog) {
+    catalogById.set(String(product.id), product as Record<string, unknown>);
+  }
+
+  const productosCorte: CorteResumenProducto[] = [];
+  let totalVenta = 0;
+
+  for (const invProd of invProductos) {
+    const productoId = String(invProd.producto_id ?? invProd.id);
+    const inicial = Number(invProd.cantidad_inicial ?? 0);
+    const finalActual = Number(invProd.cantidad_final ?? inicial);
+    const conteo = conteoByProducto.get(productoId);
+    const cantidadFinal = conteo ?? finalActual;
+    const catalogProd = catalogById.get(productoId);
+    const nombre = String(catalogProd?.nombre ?? "Producto");
+
+    if (
+      !Number.isFinite(cantidadFinal) ||
+      cantidadFinal < 0 ||
+      cantidadFinal > inicial
+    ) {
+      throw new ApiError(
+        400,
+        `Inventario final inválido para "${nombre}": debe estar entre 0 y ${inicial}`,
+        true,
+        "INVALID_CONTEO",
+      );
+    }
+
+    // Persistir el conteo como cantidad_final y dejar bitácora del ajuste.
+    if (conteo !== undefined && conteo !== finalActual) {
+      await firestorePos
+        .collection(COLLECTIONS.INVENTARIOS)
+        .doc(inv.id)
+        .collection(SUBCOLLECTIONS.PRODUCTOS)
+        .doc(invProd.id)
+        .set(
+          {
+            cantidad_final: conteo,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      await inventarioService.logMovimiento(inv.id, {
+        tipo: "AJUSTE",
+        producto_id: productoId,
+        cantidad: conteo - finalActual,
+        cantidad_anterior: finalActual,
+        cantidad_nueva: conteo,
+        sucursal_id: context.sucursalId,
+        idUser: context.idUser,
+        motivo: "Conteo final de corte",
+      });
+    }
+
+    const vendido = inicial - cantidadFinal;
+    if (vendido <= 0) continue;
+
+    const precioJornada = invProd.precio_jornada;
+    const precio =
+      precioJornada != null
+        ? Number(precioJornada)
+        : Number(catalogProd?.precio ?? 0);
+    const subtotal = roundMoney(vendido * precio);
+
+    productosCorte.push({
+      productoId,
+      nombre,
+      cantidad: vendido,
+      subtotal,
+      precioUnitario: roundMoney(precio),
+    });
+    totalVenta = roundMoney(totalVenta + subtotal);
+  }
+
+  productosCorte.sort((a, b) => b.subtotal - a.subtotal);
+
+  const { efectivoContado, diferenciaCaja } = computeDiferenciaCaja(
+    data.efectivoContado,
+    totalVenta,
+  );
+
+  const jornadaId = buildJornadaId(
+    String(inv.jornada_fecha ?? ""),
+    Number(inv.jornada_numero ?? 0),
+  );
+
+  return createCorte(
+    {
+      concesionId: context.concesionId,
+      sucursalId: context.sucursalId,
+      idUser: context.idUser,
+      ventaId: null,
+    },
+    {
+      fecha: todayIsoDate(),
+      comentarios: data.comentarios,
+      estatus: "CERRADO",
+      // Sin desglose por método de pago: la venta calculada se asume efectivo.
+      totalReal: totalVenta,
+      totalCaja: totalVenta,
+      totalEfectivo: totalVenta,
+      totalTarjeta: 0,
+      productos: productosCorte,
+      efectivoContado,
+      diferenciaCaja,
+      jornadaId,
+      inventarioId: inv.id,
+      tipoCorte: "CONTEO",
+    },
+  );
 };
 
 export const cerrarCorte = async (

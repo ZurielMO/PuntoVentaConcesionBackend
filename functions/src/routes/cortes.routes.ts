@@ -8,6 +8,7 @@ import {
   createCorteSchema,
   updateCorteSchema,
   cerrarCorteSchema,
+  cerrarCortePorConteoSchema,
 } from "../middleware/validators/corte.validator";
 import {
   requireAuthenticated,
@@ -27,6 +28,12 @@ router.post(
   requireCorteCreateAccess,
   validateBody(cerrarCorteSchema),
   c.cerrarCorte,
+);
+router.post(
+  "/cerrar-conteo",
+  requireCorteCreateAccess,
+  validateBody(cerrarCortePorConteoSchema),
+  c.cerrarCortePorConteo,
 );
 router.get("/", requireAuthenticated, q.getCortes);
 router.post("/", requireCorteCreateAccess, validateBody(createCorteSchema), c.createCorte);
