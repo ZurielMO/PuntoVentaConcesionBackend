@@ -68,7 +68,14 @@ jobs:
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
+      - name: Show deploy identity
+        run: |
+          node -e "const fs=require('fs'); const j=JSON.parse(fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS,'utf8')); console.log('Deploy SA:', j.client_email);"
+
       - name: Deploy Cloud Functions
         # Solo apiV2 (Gen2). No usar --only functions mientras Gen1 `api` siga en el proyecto:
         # en non-interactive el CLI aborta al detectar functions huérfanas.
+        # El SA necesita roles/secretmanager.viewer + secretAccessor sobre
+        # SERVICE_ACCOUNT_APP_OFICIAL2. Si vuelve el 403:
+        #   node scripts/grant-ci-secret-manager-access.mjs
         run: npx firebase-tools@latest deploy --only functions:apiV2 --project puntoventacl --non-interactive

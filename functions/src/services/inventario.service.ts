@@ -127,11 +127,100 @@ export const createInventarioPorSucursal = async (
   return toData(doc);
 };
 
+const CIERRE_JORNADA_MOTIVO = "Cierre por cambio de jornada";
+
+const matchesJornadaActiva = (
+  data: FirebaseFirestore.DocumentData,
+  fechaActiva: string,
+  jornadaNumeroActiva: number,
+): boolean =>
+  String(data.jornada_fecha ?? "") === fechaActiva &&
+  Number(data.jornada_numero ?? 0) === jornadaNumeroActiva;
+
+/**
+ * Cierra un inventario obsoleto: pone cantidad_final = 0 en productos
+ * con stock y marca el header como activo: false.
+ */
+export const cerrarInventarioPorCambioJornada = async (
+  inventarioId: string,
+  sucursalId?: string | null,
+) => {
+  const ref = col().doc(inventarioId);
+  const invDoc = await ref.get();
+  if (!invDoc.exists || invDoc.data()?.activo === false) {
+    return;
+  }
+
+  const invData = invDoc.data() ?? {};
+  const resolvedSucursalId =
+    sucursalId ?? (invData.sucursal_id as string | undefined) ?? null;
+
+  const prodSnap = await productosCol(inventarioId).get();
+  for (const prodDoc of prodSnap.docs) {
+    const prev = prodDoc.data() ?? {};
+    const prevInicial = Number(prev.cantidad_inicial ?? 0);
+    const prevFinal = Number(prev.cantidad_final ?? prevInicial);
+    if (prevFinal === 0) {
+      continue;
+    }
+
+    await prodDoc.ref.set(
+      {
+        cantidad_final: 0,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    await logMovimiento(inventarioId, {
+      tipo: "AJUSTE",
+      producto_id: String(prev.producto_id ?? prodDoc.id),
+      cantidad: -prevFinal,
+      cantidad_anterior: prevFinal,
+      cantidad_nueva: 0,
+      sucursal_id: resolvedSucursalId,
+      motivo: CIERRE_JORNADA_MOTIVO,
+    });
+  }
+
+  await ref.update({
+    activo: false,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+};
+
+/**
+ * Cierra todos los inventarios activos que no coinciden con la jornada primaria.
+ * Idempotente: si no hay obsoletos, no hace nada.
+ */
+export const cerrarInventariosObsoletos = async (
+  fechaActiva: string,
+  jornadaNumeroActiva: string | number,
+) => {
+  const fecha = normalizeFecha(fechaActiva);
+  const jornadaNumero = Number(jornadaNumeroActiva);
+  const snap = await col().where("activo", "==", true).get();
+
+  const obsoletos = snap.docs.filter(
+    (doc) => !matchesJornadaActiva(doc.data(), fecha, jornadaNumero),
+  );
+
+  for (const doc of obsoletos) {
+    await cerrarInventarioPorCambioJornada(
+      doc.id,
+      (doc.data()?.sucursal_id as string | undefined) ?? null,
+    );
+  }
+
+  return { cerrados: obsoletos.length };
+};
+
 export const getOrCreateInventarioJornadaActiva = async (
   sucursalId: string,
   includeProductos = true,
 ) => {
   const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
+  await cerrarInventariosObsoletos(fecha, jornadaNumero);
   const inventario = await createInventarioPorSucursal(
     jornadaNumero,
     fecha,
@@ -175,10 +264,17 @@ const getInventarioJornadaActivaFromFirestore = async (
     return { inventario: null, jornada: null };
   }
 
-  const doc = snap.docs.sort(
+  const sorted = snap.docs.sort(
     (a, b) =>
       inventarioDocTimestamp(b.data()) - inventarioDocTimestamp(a.data()),
-  )[0];
+  );
+  const doc = sorted[0];
+  const obsoletos = sorted.slice(1);
+
+  for (const obsolete of obsoletos) {
+    await cerrarInventarioPorCambioJornada(obsolete.id, sucursalId);
+  }
+
   const data = doc.data();
   const jornada: JornadaActivaValue = {
     activo: true,
@@ -213,6 +309,7 @@ export const getInventarioJornadaActiva = async (
   }
 
   const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
+  await cerrarInventariosObsoletos(fecha, jornadaNumero);
   const id = buildInventarioId(fecha, jornadaNumero, sucursalId);
   const doc = await col().doc(id).get();
 
