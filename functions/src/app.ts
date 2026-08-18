@@ -68,6 +68,8 @@ app.use((req, _res, next) => {
 app.use(
   helmet({
     contentSecurityPolicy: false,
+    // API pública para el front en otro dominio; same-origin bloquea el fetch.
+    crossOriginResourcePolicy: { policy: "cross-origin" },
     hsts: isProductionRuntime
       ? { maxAge: 31536000, includeSubDomains: true, preload: true }
       : false,

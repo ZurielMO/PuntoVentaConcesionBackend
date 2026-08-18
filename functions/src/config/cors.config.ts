@@ -2,6 +2,9 @@ const DEFAULT_CORS_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
   "https://concesiones.clubleon.mx",
+  "http://concesiones.clubleon.mx",
+  "http://foodmarket.clubleon.mx",
+  "https://foodmarket.clubleon.mx",
 ] as const;
 
 function parseOrigins(raw: string | undefined): string[] {

@@ -12,6 +12,7 @@ import * as concessionService from "./concession.service";
 import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import { resolveJornadaParaReporte } from "./jornada.service";
+import type { ConcessionTipo } from "../models";
 
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 const productosCol = (inventarioId: string) =>
@@ -54,8 +55,16 @@ export interface ReporteConcesionRow {
   gananciaConcesion: number;
 }
 
+export interface ReporteConcesionInfo {
+  id: string;
+  nombre: string;
+  tipo: ConcessionTipo;
+}
+
 export interface ReporteCortes {
   jornada: { fecha: string; numero: number; jornadaId: string };
+  /** Concesión del reporte; null en el consolidado de todas las concesiones. */
+  concesion: ReporteConcesionInfo | null;
   productos: ReporteProductoRow[] | null;
   productoTotales: ReporteProductoTotalesRow | null;
   resumen: ReporteConcesionRow[];
@@ -522,6 +531,11 @@ export const buildReporteCortes = async (
       );
     return {
       jornada,
+      concesion: {
+        id: concesion.id,
+        nombre: String(concesion.nombre ?? concesion.id),
+        tipo: concesion.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL",
+      },
       productos,
       productoTotales,
       resumen: [resumen],
@@ -573,6 +587,7 @@ export const buildReporteCortes = async (
 
   return {
     jornada,
+    concesion: null,
     productos: null,
     productoTotales: null,
     resumen: resumenRows.sort((a, b) => a.nombre.localeCompare(b.nombre, "es")),
