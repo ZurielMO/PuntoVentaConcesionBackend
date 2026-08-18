@@ -30,7 +30,7 @@ export interface User extends BaseEntity {
     cajaId?: string | null;
 }
 
-export type ConcessionTipo = "CERVECERIA" | "GENERAL";
+export type ConcessionTipo = "GENERAL" | "CERVECERIA";
 
 export interface Concession extends BaseEntity {
     nombre: string;
@@ -39,7 +39,7 @@ export interface Concession extends BaseEntity {
     idUser?: string | null;
     /** Porcentaje de comisión del operador sobre venta neta (0–100). */
     porcentajeComision?: number | null;
-    /** Tipo de concesión. Default GENERAL; CERVECERIA habilita admins de sucursal cervecería. */
+    /** GENERAL = POS clásico; CERVECERIA habilita admins de sucursal y corte por conteo. */
     tipo?: ConcessionTipo;
 }
 
@@ -54,17 +54,17 @@ export interface Caja extends BaseEntity {
     orden?: number;
 }
 
+export type SucursalModoOperacion = "POS" | "CONTEO";
+
 export interface Sucursal extends BaseEntity {
     concesion_id: string;
     zona_id: string;
     nombre: string | null;
     activo: boolean;
-    /** Modo de operación: POS clásico o cierre por conteo (Admin Cervecería). Default POS. */
+    /** POS = cajas/vendedores; CONTEO = cierre por inventario (Admin Cervecería). Default POS. */
     modo_operacion?: SucursalModoOperacion;
     cajas?: Caja[];
 }
-
-export type SucursalModoOperacion = "POS" | "CONTEO";
 
 export interface Product extends BaseEntity {
     concesion_id: string;
@@ -202,6 +202,8 @@ export interface Corte extends BaseEntity {
     idUser: string | null;
     concesionId: string;
     sucursalId?: string | null;
+    cajaId?: string | null;
+    cajaNombre?: string | null;
     fecha: string;
     comentarios: string | null;
     estatus: string;
@@ -209,4 +211,6 @@ export interface Corte extends BaseEntity {
     totalCaja: number;
     totalEfectivo?: number | null;
     totalTarjeta?: number | null;
+    /** CONTEO = cierre por inventario (cervecería). Ausente/null = corte POS. */
+    tipoCorte?: string | null;
 }

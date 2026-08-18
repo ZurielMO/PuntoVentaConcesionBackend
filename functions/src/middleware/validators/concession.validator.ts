@@ -7,7 +7,9 @@ const porcentajeComisionField = z
   .optional()
   .default(0);
 
-const tipoConcesionField = z.enum(["CERVECERIA", "GENERAL"]).optional();
+export const concessionTipoSchema = z.enum(["GENERAL", "CERVECERIA"]);
+
+const tipoField = concessionTipoSchema.optional().default("GENERAL");
 
 export const createConcessionSchema = z
   .object({
@@ -15,7 +17,7 @@ export const createConcessionSchema = z
     activo: z.boolean().optional().default(true),
     imagenes: z.array(z.string().url()).optional().default([]),
     porcentajeComision: porcentajeComisionField,
-    tipo: tipoConcesionField.default("GENERAL"),
+    tipo: tipoField,
   })
   .strict();
 
@@ -28,7 +30,7 @@ export const replaceConcessionSchema = z
     imagenes: z.array(z.string().url()).optional(),
     porcentajeComision: porcentajeComisionField,
     // Omitido = conservar tipo existente.
-    tipo: tipoConcesionField,
+    tipo: concessionTipoSchema.optional(),
   })
   .strict();
 

@@ -191,7 +191,11 @@ export const createSucursal = async (
   zonaId: string,
   data: {
     activo?: boolean;
-    sucursal: { nombre?: string; cajas?: string[]; modo_operacion?: "POS" | "CONTEO" };
+    sucursal: {
+      nombre?: string;
+      cajas?: string[];
+      modo_operacion?: "POS" | "CONTEO";
+    };
   },
 ) => {
   const payload = {
@@ -199,7 +203,8 @@ export const createSucursal = async (
     zona_id: zonaId,
     nombre: data.sucursal.nombre ?? null,
     activo: data.activo ?? true,
-    modo_operacion: data.sucursal.modo_operacion ?? "POS",
+    modo_operacion:
+      data.sucursal.modo_operacion === "CONTEO" ? "CONTEO" : "POS",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -218,7 +223,11 @@ export const updateSucursal = async (
   data: {
     activo?: boolean;
     zona_id?: string;
-    sucursal?: { nombre?: string; cajas?: string[]; modo_operacion?: "POS" | "CONTEO" };
+    sucursal?: {
+      nombre?: string;
+      cajas?: string[];
+      modo_operacion?: "POS" | "CONTEO";
+    };
   },
 ) => {
   const ref = col().doc(id);

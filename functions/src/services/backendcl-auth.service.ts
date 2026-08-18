@@ -18,11 +18,36 @@ interface TokenCache {
 let tokenCache: TokenCache | null = null;
 let tokenPromise: Promise<string> | null = null;
 
+/**
+ * Base URL de BackendCL (sin slash final).
+ *
+ * Producción: `https://us-central1-e-comerce-leon.cloudfunctions.net/api`
+ * Local:      `http://127.0.0.1:3001` (BackendCL monta rutas bajo `/api`)
+ */
 export const getBackendClBaseUrl = (): string =>
   (process.env.BACKENDCL_API_BASE_URL || DEFAULT_BACKENDCL_BASE_URL).replace(
     /\/+$/,
     "",
   );
+
+/**
+ * Une base + path de BackendCL sin duplicar el segmento `/api`.
+ *
+ * - base `.../api` + `/api/usuarios/x` → `.../api/usuarios/x`
+ * - base `http://127.0.0.1:3001` + `/api/usuarios/x` → `http://127.0.0.1:3001/api/usuarios/x`
+ */
+export const buildBackendClApiUrl = (path: string): string => {
+  const base = getBackendClBaseUrl();
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  if (base.endsWith("/api") && normalizedPath === "/api") {
+    return base;
+  }
+  if (base.endsWith("/api") && normalizedPath.startsWith("/api/")) {
+    return `${base}${normalizedPath.slice("/api".length)}`;
+  }
+  return `${base}${normalizedPath}`;
+};
 
 const getStaticBearerToken = (): string | undefined => {
   const token = process.env.BACKENDCL_BEARER_TOKEN?.trim();
@@ -68,7 +93,7 @@ const loginToBackendCl = async (): Promise<TokenCache> => {
     );
   }
 
-  const url = `${getBackendClBaseUrl()}/api/auth/register-or-login`;
+  const url = buildBackendClApiUrl("/api/auth/register-or-login");
 
   let response;
   try {
@@ -126,7 +151,7 @@ const loginToBackendCl = async (): Promise<TokenCache> => {
 const refreshBackendClToken = async (
   currentToken: string,
 ): Promise<TokenCache> => {
-  const url = `${getBackendClBaseUrl()}/api/auth/refresh`;
+  const url = buildBackendClApiUrl("/api/auth/refresh");
 
   const response = await axios.post(
     url,

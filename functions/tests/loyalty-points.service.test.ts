@@ -2,16 +2,26 @@ import axios from "axios";
 
 const mockMovGet = jest.fn();
 const mockMovSet = jest.fn();
+const mockUserDocGet = jest.fn();
+const mockUserDocSet = jest.fn();
+const mockWhereGet = jest.fn();
 
 jest.mock("../src/config/app.firebase", () => ({
   firestoreApp: {
     collection: jest.fn(() => ({
       doc: jest.fn(() => ({
+        get: (...args: unknown[]) => mockUserDocGet(...args),
+        set: (...args: unknown[]) => mockUserDocSet(...args),
         collection: jest.fn(() => ({
           doc: jest.fn(() => ({
             get: (...args: unknown[]) => mockMovGet(...args),
             set: (...args: unknown[]) => mockMovSet(...args),
           })),
+        })),
+      })),
+      where: jest.fn(() => ({
+        limit: jest.fn(() => ({
+          get: (...args: unknown[]) => mockWhereGet(...args),
         })),
       })),
     })),
@@ -29,6 +39,7 @@ import {
   getClubMember,
   PUNTOS_POR_PESO_CANJE,
   recordPosRedemptionMovement,
+  ventaAcumulaPuntos,
 } from "../src/services/loyalty-points.service";
 
 jest.mock("axios");
@@ -45,6 +56,9 @@ describe("loyalty-points.service", () => {
     jest.clearAllMocks();
     mockMovGet.mockResolvedValue({ exists: false });
     mockMovSet.mockResolvedValue(undefined);
+    mockUserDocGet.mockResolvedValue({ exists: false, data: () => undefined });
+    mockUserDocSet.mockResolvedValue(undefined);
+    mockWhereGet.mockResolvedValue({ empty: true, docs: [] });
     (mockedAxios.isAxiosError as unknown as jest.Mock).mockImplementation(
       (payload: unknown) =>
         Boolean(
@@ -61,10 +75,33 @@ describe("loyalty-points.service", () => {
     expect(calcularPuntosPorVenta(80)).toBe(8);
   });
 
-  it("calcula canje con 10 puntos por peso", () => {
+  it("ventaAcumulaPuntos es false cuando se pagan puntos (incl. mixtos)", () => {
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "efectivo", puntosUsados: 0 }),
+    ).toBe(true);
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "tarjeta", puntosUsados: 0 }),
+    ).toBe(true);
+    expect(ventaAcumulaPuntos({ metodoPago: "puntos", puntosUsados: 800 })).toBe(
+      false,
+    );
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "puntos+efectivo", puntosUsados: 500 }),
+    ).toBe(false);
+    expect(
+      ventaAcumulaPuntos({ metodoPago: "puntos+tarjeta", puntosUsados: 400 }),
+    ).toBe(false);
+    expect(ventaAcumulaPuntos({ metodoPago: "efectivo", puntosUsados: 10 })).toBe(
+      false,
+    );
+  });
+
+  it("calcula canje con 10 puntos por peso (pesos enteros)", () => {
     expect(PUNTOS_POR_PESO_CANJE).toBe(10);
     expect(calcularPuntosNecesariosParaTotal(80)).toBe(800);
+    expect(calcularPuntosNecesariosParaTotal(90.5)).toBe(900);
     expect(calcularMontoDesdePuntos(500)).toBe(50);
+    expect(calcularMontoDesdePuntos(183)).toBe(18);
     expect(
       calcularCanjePuntos({ total: 80, puntosDisponibles: 500 }),
     ).toEqual({
@@ -78,6 +115,41 @@ describe("loyalty-points.service", () => {
       puntosUsados: 800,
       montoPuntos: 80,
       restante: 0,
+    });
+  });
+
+  it("redondea canje hacia pesos enteros (floor): 183 pts → 180 / $18", () => {
+    expect(
+      calcularCanjePuntos({ total: 90, puntosDisponibles: 183 }),
+    ).toEqual({
+      puntosUsados: 180,
+      montoPuntos: 18,
+      restante: 72,
+    });
+    expect(
+      calcularCanjePuntos({
+        total: 90,
+        puntosDisponibles: 183,
+        puntosSolicitados: 183,
+      }),
+    ).toEqual({
+      puntosUsados: 180,
+      montoPuntos: 18,
+      restante: 72,
+    });
+    expect(
+      calcularCanjePuntos({ total: 18.5, puntosDisponibles: 185 }),
+    ).toEqual({
+      puntosUsados: 180,
+      montoPuntos: 18,
+      restante: 0.5,
+    });
+    expect(
+      calcularCanjePuntos({ total: 90, puntosDisponibles: 9 }),
+    ).toEqual({
+      puntosUsados: 0,
+      montoPuntos: 0,
+      restante: 90,
     });
   });
 
@@ -104,13 +176,36 @@ describe("loyalty-points.service", () => {
     });
 
     expect(mockedAxios.get).toHaveBeenCalledWith(
-      "https://example.test/api/api/usuarios/uid-1",
+      "https://example.test/api/usuarios/uid-1",
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: "Bearer test-jwt-token",
         }),
       }),
     );
+  });
+
+  it("getClubMember usa usuariosApp si BackendCL no responde", async () => {
+    mockedAxios.get.mockRejectedValueOnce(new Error("ECONNRESET"));
+    mockUserDocGet.mockResolvedValueOnce({
+      exists: true,
+      id: "uid-1",
+      data: () => ({
+        uid: "uid-1",
+        nombre: "Ana Socio",
+        email: "ana@test.com",
+        puntosActuales: 80,
+      }),
+    });
+
+    const member = await getClubMember("uid-1");
+
+    expect(member).toEqual({
+      id: "uid-1",
+      nombre: "Ana Socio",
+      email: "ana@test.com",
+      puntosActuales: 80,
+    });
   });
 
   it("assignPointsBySale mapea 403 como permisos insuficientes", async () => {
@@ -160,10 +255,10 @@ describe("loyalty-points.service", () => {
     expect(result.puntosActuales).toBe(420);
 
     expect(mockedAxios.post.mock.calls[0][0]).toBe(
-      "https://example.test/api/api/loyalty/v1/redemptions",
+      "https://example.test/api/loyalty/v1/redemptions",
     );
     expect(mockedAxios.post.mock.calls[1][0]).toBe(
-      "https://example.test/api/api/loyalty/v1/redemptions/red-1/confirm",
+      "https://example.test/api/loyalty/v1/redemptions/red-1/confirm",
     );
     expect(mockMovSet).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -239,11 +334,53 @@ describe("loyalty-points.service", () => {
 
     const [url, body] = mockedAxios.post.mock.calls[0];
     expect(url).toBe(
-      "https://example.test/api/api/usuarios/uid-2/puntos/asignar-por-venta",
+      "https://example.test/api/usuarios/uid-2/puntos/asignar-por-venta",
     );
     expect(body).toEqual({
       dinero: 320,
       descripcion: "Venta POS V-123",
     });
+  });
+
+  it("assignPointsBySale acredita en usuariosApp si BackendCL no responde", async () => {
+    mockedAxios.post.mockRejectedValueOnce(new Error("ECONNRESET"));
+    mockUserDocGet.mockResolvedValue({
+      exists: true,
+      id: "uid-2",
+      data: () => ({
+        uid: "uid-2",
+        puntosActuales: 100,
+      }),
+    });
+
+    const result = await assignPointsBySale({
+      memberId: "uid-2",
+      total: 90,
+      ventaId: "V-icee-1",
+    });
+
+    expect(result).toEqual({
+      memberId: "uid-2",
+      montoVenta: 90,
+      puntosAsignados: 9,
+      puntosActuales: 109,
+      descripcion: "Venta POS V-icee-1",
+      externalResponse: { source: "usuariosApp", alreadyAssigned: false },
+    });
+    expect(mockMovSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "pos_acc_V-icee-1",
+        tipo: "ACUMULACION",
+        puntos: 9,
+        saldoAnterior: 100,
+        saldoNuevo: 109,
+        origen: "pos",
+        origenId: "V-icee-1",
+      }),
+    );
+    expect(mockUserDocSet).toHaveBeenCalledWith(
+      expect.objectContaining({ puntosActuales: 109 }),
+      { merge: true },
+    );
   });
 });

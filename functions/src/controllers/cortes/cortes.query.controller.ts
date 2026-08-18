@@ -14,11 +14,11 @@ import {
 
 export const getCorteResumen = asyncHandler(
   async (req: Request, res: Response) => {
-    const user = req.user;
     const filters = await getOperationalListFiltersAsync(req);
     const data = await corteService.buildCorteResumen({
       ...filters,
-      idUser: user?.uid as string | undefined,
+      // Permite emparejar cortes legacy sin cajaId al mismo cajero.
+      idUser: filters.idUser ?? req.user?.uid,
     });
     res.status(200).json({ success: true, data });
   },

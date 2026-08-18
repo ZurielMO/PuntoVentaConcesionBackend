@@ -1,6 +1,7 @@
 import axios from "axios";
 import jwt from "jsonwebtoken";
 import {
+  buildBackendClApiUrl,
   getBackendClBearerToken,
   getBackendClBaseUrl,
   resetBackendClAuthCacheForTests,
@@ -41,6 +42,30 @@ describe("backendcl-auth.service", () => {
     expect(getBackendClBaseUrl()).toBe("https://example.test/api");
   });
 
+  it("buildBackendClApiUrl no duplica /api cuando la base ya termina en /api", () => {
+    process.env.BACKENDCL_API_BASE_URL =
+      "https://us-central1-e-comerce-leon.cloudfunctions.net/api";
+    expect(buildBackendClApiUrl("/api/usuarios/uid-1")).toBe(
+      "https://us-central1-e-comerce-leon.cloudfunctions.net/api/usuarios/uid-1",
+    );
+    expect(buildBackendClApiUrl("/api/auth/register-or-login")).toBe(
+      "https://us-central1-e-comerce-leon.cloudfunctions.net/api/auth/register-or-login",
+    );
+    expect(buildBackendClApiUrl("/api/loyalty/v1/redemptions")).toBe(
+      "https://us-central1-e-comerce-leon.cloudfunctions.net/api/loyalty/v1/redemptions",
+    );
+  });
+
+  it("buildBackendClApiUrl conserva /api con base local sin /api", () => {
+    process.env.BACKENDCL_API_BASE_URL = "http://127.0.0.1:3001";
+    expect(buildBackendClApiUrl("/api/usuarios/uid-1")).toBe(
+      "http://127.0.0.1:3001/api/usuarios/uid-1",
+    );
+    expect(buildBackendClApiUrl("api/auth/refresh")).toBe(
+      "http://127.0.0.1:3001/api/auth/refresh",
+    );
+  });
+
   it("usa BACKENDCL_BEARER_TOKEN estático sin llamar a BackendCL", async () => {
     process.env.BACKENDCL_BEARER_TOKEN = "static-override-token";
 
@@ -66,7 +91,7 @@ describe("backendcl-auth.service", () => {
     expect(second).toBe(sessionToken);
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(mockedAxios.post).toHaveBeenCalledWith(
-      "https://example.test/api/api/auth/register-or-login",
+      "https://example.test/api/auth/register-or-login",
       {
         email: "empleado@clubleon.test",
         password: "secret-password",
@@ -102,7 +127,7 @@ describe("backendcl-auth.service", () => {
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     expect(mockedAxios.post).toHaveBeenNthCalledWith(
       2,
-      "https://example.test/api/api/auth/refresh",
+      "https://example.test/api/auth/refresh",
       {},
       expect.objectContaining({
         headers: expect.objectContaining({

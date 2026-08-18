@@ -70,7 +70,7 @@ export const createConcession = async (
     activo?: boolean;
     imagenes?: string[];
     porcentajeComision?: number;
-    tipo?: "CERVECERIA" | "GENERAL";
+    tipo?: "GENERAL" | "CERVECERIA";
   },
   idUser?: string,
 ) => {
@@ -79,7 +79,7 @@ export const createConcession = async (
     activo: data.activo ?? true,
     imagenes: data.imagenes ?? [],
     porcentajeComision: data.porcentajeComision ?? 0,
-    tipo: data.tipo ?? "GENERAL",
+    tipo: data.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL",
     idUser: idUser ?? null,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -96,7 +96,7 @@ export const replaceConcession = async (
     activo?: boolean;
     imagenes?: string[];
     porcentajeComision?: number;
-    tipo?: "CERVECERIA" | "GENERAL";
+    tipo?: "GENERAL" | "CERVECERIA";
   },
 ) => {
   const ref = col().doc(id);
@@ -110,6 +110,8 @@ export const replaceConcession = async (
   const existingImagenes = Array.isArray(existing.imagenes)
     ? (existing.imagenes as string[])
     : [];
+  const existingTipo =
+    existing.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL";
   await ref.set({
     nombre: data.nombre,
     activo: data.activo ?? true,
@@ -117,7 +119,7 @@ export const replaceConcession = async (
     idUser: existing.idUser ?? null,
     porcentajeComision:
       data.porcentajeComision ?? existing.porcentajeComision ?? 0,
-    tipo: data.tipo ?? existing.tipo ?? "GENERAL",
+    tipo: data.tipo ?? existingTipo,
     createdAt: existing.createdAt ?? FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -232,7 +234,7 @@ export const assignConcessionPoints = async (
 
   const baseUrl =
     process.env.CONCESSION_POINTS_ASSIGN_URL ||
-    "https://us-central1-e-comerce-leon.cloudfunctions.net/api/api/usuarios";
+    "https://us-central1-e-comerce-leon.cloudfunctions.net/api/usuarios";
   const url = `${baseUrl.replace(/\/+$/, "")}/${encodeURIComponent(
     userId,
   )}/puntos/asignar`;

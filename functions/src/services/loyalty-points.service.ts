@@ -2,6 +2,7 @@ import axios from "axios";
 import { FieldValue } from "firebase-admin/firestore";
 import { firestoreApp } from "../config/app.firebase";
 import {
+  buildBackendClApiUrl,
   getBackendClBearerToken,
   invalidateBackendClAuthCache,
 } from "./backendcl-auth.service";
@@ -9,9 +10,6 @@ import { ApiError } from "../utils/api-error";
 
 const USUARIOS_APP_COLLECTION = "usuariosApp";
 const MOVIMIENTOS_PUNTOS_SUBCOLLECTION = "movimientos_puntos";
-
-const DEFAULT_BACKENDCL_BASE_URL =
-  "https://us-central1-e-comerce-leon.cloudfunctions.net/api";
 
 export interface ClubMemberData {
   id: string;
@@ -44,11 +42,24 @@ export const PUNTOS_POR_PESO_CANJE = 10;
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100;
 
-export const calcularMontoDesdePuntos = (puntos: number): number =>
-  roundMoney(puntos / PUNTOS_POR_PESO_CANJE);
+/**
+ * Canje always uses whole pesos only: floor points to multiples of
+ * PUNTOS_POR_PESO_CANJE (183 → 180 pts → $18; leave 3 unused).
+ */
+export const puntosUsablesParaCanje = (puntos: number): number => {
+  const truncados = Math.max(0, Math.trunc(puntos));
+  return Math.floor(truncados / PUNTOS_POR_PESO_CANJE) * PUNTOS_POR_PESO_CANJE;
+};
 
-export const calcularPuntosNecesariosParaTotal = (total: number): number =>
-  Math.ceil(total * PUNTOS_POR_PESO_CANJE);
+/** Money from points; only complete-peso multiples count (183 → 18). */
+export const calcularMontoDesdePuntos = (puntos: number): number =>
+  puntosUsablesParaCanje(puntos) / PUNTOS_POR_PESO_CANJE;
+
+/** Max points redeemable toward total, capped at whole pesos (floor). */
+export const calcularPuntosNecesariosParaTotal = (total: number): number => {
+  const pesosEnteros = Math.max(0, Math.floor(Number(total) || 0));
+  return pesosEnteros * PUNTOS_POR_PESO_CANJE;
+};
 
 export const calcularCanjePuntos = (params: {
   total: number;
@@ -57,22 +68,16 @@ export const calcularCanjePuntos = (params: {
 }): { puntosUsados: number; montoPuntos: number; restante: number } => {
   const { total, puntosDisponibles } = params;
   const maxPuntos = calcularPuntosNecesariosParaTotal(total);
-  const solicitados = params.puntosSolicitados ?? maxPuntos;
-  const puntosUsados = Math.min(
-    Math.max(0, Math.trunc(solicitados)),
-    Math.max(0, Math.trunc(puntosDisponibles)),
-    maxPuntos,
-  );
+  const disponiblesUsables = puntosUsablesParaCanje(puntosDisponibles);
+  const solicitadosUsables =
+    params.puntosSolicitados == null
+      ? maxPuntos
+      : puntosUsablesParaCanje(params.puntosSolicitados);
+  const puntosUsados = Math.min(solicitadosUsables, disponiblesUsables, maxPuntos);
   const montoPuntos = calcularMontoDesdePuntos(puntosUsados);
   const restante = roundMoney(Math.max(0, total - montoPuntos));
   return { puntosUsados, montoPuntos, restante };
 };
-
-const getBackendClBaseUrl = (): string =>
-  (process.env.BACKENDCL_API_BASE_URL || DEFAULT_BACKENDCL_BASE_URL).replace(
-    /\/+$/,
-    "",
-  );
 
 const backendClHeaders = async () => ({
   Authorization: `Bearer ${await getBackendClBearerToken()}`,
@@ -217,13 +222,75 @@ export const recordPosRedemptionMovement = async (params: {
 export const calcularPuntosPorVenta = (total: number): number =>
   Math.round(total * 0.1);
 
+/**
+ * True when the sale should earn loyalty points.
+ * Any points redemption (puntos / puntos+efectivo / puntos+tarjeta) earns 0.
+ */
+export const ventaAcumulaPuntos = (params: {
+  metodoPago?: string | null;
+  puntosUsados?: number | null;
+}): boolean => {
+  const puntosUsados = Math.max(0, Math.trunc(Number(params.puntosUsados) || 0));
+  const metodo = String(params.metodoPago ?? "").trim().toLowerCase();
+  if (puntosUsados > 0) return false;
+  if (metodo === "puntos" || metodo.startsWith("puntos+")) return false;
+  return true;
+};
+
+const getUsuariosAppByUid = async (
+  uid: string,
+): Promise<{ id: string; data: Record<string, unknown> } | null> => {
+  const directRef = firestoreApp.collection(USUARIOS_APP_COLLECTION).doc(uid);
+  const directSnap = await directRef.get();
+  if (directSnap.exists) {
+    return { id: directSnap.id, data: (directSnap.data() ?? {}) as Record<string, unknown> };
+  }
+
+  const snapshot = await firestoreApp
+    .collection(USUARIOS_APP_COLLECTION)
+    .where("uid", "==", uid)
+    .limit(1)
+    .get();
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const snap = snapshot.docs[0];
+  return { id: snap.id, data: (snap.data() ?? {}) as Record<string, unknown> };
+};
+
+const memberFromUsuariosApp = (
+  id: string,
+  data: Record<string, unknown>,
+  fallbackId: string,
+): ClubMemberData => {
+  const nombre =
+    (data.nombre as string | undefined)?.trim() ||
+    (data.displayName as string | undefined)?.trim() ||
+    "Socio";
+  const email = (data.email as string | undefined)?.trim() ?? "";
+  const puntosActuales = Number(data.puntosActuales ?? 0);
+
+  return {
+    id:
+      (data.uid as string | undefined)?.trim() ||
+      id ||
+      fallbackId,
+    nombre,
+    email,
+    puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
+  };
+};
+
 export const getClubMember = async (memberId: string): Promise<ClubMemberData> => {
   const trimmedId = memberId.trim();
   if (!trimmedId) {
     throw new ApiError(400, "ID de socio inválido", true, "INVALID_MEMBER_ID");
   }
 
-  const url = `${getBackendClBaseUrl()}/api/usuarios/${encodeURIComponent(trimmedId)}`;
+  const url = buildBackendClApiUrl(
+    `/api/usuarios/${encodeURIComponent(trimmedId)}`,
+  );
 
   try {
     const resp = await withBackendClAuthRetry((headers) =>
@@ -231,6 +298,18 @@ export const getClubMember = async (memberId: string): Promise<ClubMemberData> =
     );
     return extractMember(resp.data, trimmedId);
   } catch (error) {
+    try {
+      const fromFirestore = await getUsuariosAppByUid(trimmedId);
+      if (fromFirestore) {
+        return memberFromUsuariosApp(
+          fromFirestore.id,
+          fromFirestore.data,
+          trimmedId,
+        );
+      }
+    } catch {
+      // Keep the original BackendCL error if Firestore is also unavailable.
+    }
     throw mapAxiosError(error, "No se pudo validar el socio en Club León");
   }
 };
@@ -286,7 +365,7 @@ export const createRedemptionHold = async (params: {
 
   const descripcion = `Canje POS ${ventaId}`;
   const idempotencyKey = `pos-redeem:${ventaId}`;
-  const createUrl = `${getBackendClBaseUrl()}/api/loyalty/v1/redemptions`;
+  const createUrl = buildBackendClApiUrl("/api/loyalty/v1/redemptions");
 
   try {
     const createResp = await withBackendClAuthRetry((headers) =>
@@ -339,9 +418,11 @@ export const confirmRedemptionHold = async (params: {
   descripcion: string;
 }): Promise<RedeemPointsBySaleResult> => {
   const idempotencyKey = `pos-redeem:${params.ventaId}:confirm`;
-  const confirmUrl = `${getBackendClBaseUrl()}/api/loyalty/v1/redemptions/${encodeURIComponent(
-    params.redemptionId,
-  )}/confirm`;
+  const confirmUrl = buildBackendClApiUrl(
+    `/api/loyalty/v1/redemptions/${encodeURIComponent(
+      params.redemptionId,
+    )}/confirm`,
+  );
 
   try {
     const confirmResp = await withBackendClAuthRetry((headers) =>
@@ -393,9 +474,11 @@ export const cancelRedemptionHold = async (params: {
   redemptionId: string;
   ventaId: string;
 }): Promise<void> => {
-  const cancelUrl = `${getBackendClBaseUrl()}/api/loyalty/v1/redemptions/${encodeURIComponent(
-    params.redemptionId,
-  )}/cancel`;
+  const cancelUrl = buildBackendClApiUrl(
+    `/api/loyalty/v1/redemptions/${encodeURIComponent(
+      params.redemptionId,
+    )}/cancel`,
+  );
 
   try {
     await withBackendClAuthRetry((headers) =>
@@ -416,6 +499,74 @@ export const cancelRedemptionHold = async (params: {
   }
 };
 
+const buildPosAccumulationMovementDocId = (ventaId: string): string =>
+  `pos_acc_${ventaId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120)}`;
+
+const assignPointsBySaleInUsuariosApp = async (params: {
+  memberId: string;
+  total: number;
+  ventaId: string;
+  puntosAsignados: number;
+  descripcion: string;
+}): Promise<AssignPointsBySaleResult> => {
+  const user = await getUsuariosAppByUid(params.memberId);
+  if (!user) {
+    throw new ApiError(404, "Socio no encontrado", true, "MEMBER_NOT_FOUND");
+  }
+
+  const userRef = firestoreApp.collection(USUARIOS_APP_COLLECTION).doc(user.id);
+  const docId = buildPosAccumulationMovementDocId(params.ventaId);
+  const movRef = userRef.collection(MOVIMIENTOS_PUNTOS_SUBCOLLECTION).doc(docId);
+  const existing = await movRef.get();
+  if (existing.exists) {
+    const data = existing.data() as { saldoNuevo?: number } | undefined;
+    const puntosActuales = Number(
+      data?.saldoNuevo ?? user.data.puntosActuales ?? 0,
+    );
+    return {
+      memberId: user.id,
+      montoVenta: params.total,
+      puntosAsignados: params.puntosAsignados,
+      puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
+      descripcion: params.descripcion,
+      externalResponse: { source: "usuariosApp", alreadyAssigned: true },
+    };
+  }
+
+  const saldoAnterior = Number(user.data.puntosActuales ?? 0);
+  const saldoNuevo = saldoAnterior + params.puntosAsignados;
+
+  await movRef.set({
+    id: docId,
+    usuarioId: user.id,
+    tipo: "ACUMULACION",
+    puntos: params.puntosAsignados,
+    saldoAnterior,
+    saldoNuevo,
+    origen: "pos",
+    origenId: params.ventaId,
+    referencia: params.ventaId,
+    descripcion: params.descripcion,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await userRef.set(
+    {
+      puntosActuales: saldoNuevo,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return {
+    memberId: user.id,
+    montoVenta: params.total,
+    puntosAsignados: params.puntosAsignados,
+    puntosActuales: saldoNuevo,
+    descripcion: params.descripcion,
+    externalResponse: { source: "usuariosApp", alreadyAssigned: false },
+  };
+};
+
 export const assignPointsBySale = async (params: {
   memberId: string;
   total: number;
@@ -434,9 +585,9 @@ export const assignPointsBySale = async (params: {
   const puntosAsignados = calcularPuntosPorVenta(total);
   const descripcion = `Venta POS ${ventaId}`;
 
-  const url = `${getBackendClBaseUrl()}/api/usuarios/${encodeURIComponent(
-    trimmedId,
-  )}/puntos/asignar-por-venta`;
+  const url = buildBackendClApiUrl(
+    `/api/usuarios/${encodeURIComponent(trimmedId)}/puntos/asignar-por-venta`,
+  );
 
   try {
     const resp = await withBackendClAuthRetry((headers) =>
@@ -464,6 +615,22 @@ export const assignPointsBySale = async (params: {
       externalResponse: resp.data,
     };
   } catch (error) {
+    try {
+      return await assignPointsBySaleInUsuariosApp({
+        memberId: trimmedId,
+        total,
+        ventaId,
+        puntosAsignados,
+        descripcion,
+      });
+    } catch (fallbackError) {
+      if (
+        fallbackError instanceof ApiError &&
+        fallbackError.code !== "MEMBER_NOT_FOUND"
+      ) {
+        throw fallbackError;
+      }
+    }
     throw mapAxiosError(error, "No se pudieron asignar los puntos en Club León");
   }
 };

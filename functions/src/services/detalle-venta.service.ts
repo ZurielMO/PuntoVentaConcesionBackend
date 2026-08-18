@@ -16,8 +16,17 @@ import {
   confirmRedemptionHold,
   createRedemptionHold,
   getClubMember,
+  PUNTOS_POR_PESO_CANJE,
 } from "./loyalty-points.service";
 import type { ComboProducto } from "../models";
+import { assertVentaPermitidaConCorte } from "./corte-guard.service";
+import { getConcessionNombre } from "./concession.service";
+import { listProducts } from "./product.service";
+import {
+  expandInventoryConsumptionDraws,
+  type CatalogProductRef,
+  type InventoryDraw,
+} from "../config/inventory-consumption.config";
 
 const col = () => firestorePos.collection(COLLECTIONS.COMPROBANTES_VENTA);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -53,32 +62,37 @@ interface ResolvedLinea {
 const computeTotal = (lineas: { subtotal: number }[]) =>
   Math.round(lineas.reduce((acc, l) => acc + l.subtotal, 0) * 100) / 100;
 
-/** Agrupa líneas por producto (combo + productos sueltos pueden repetir el mismo id). */
+/**
+ * Agrupa líneas por producto + precio unitario.
+ *
+ * Mismo producto a distinto precio se conserva separado (p. ej. 2x1:
+ * 1 ud @ catálogo + 1 ud @ $0 cortesía). Nunca promediar ($75 en papas 2x1).
+ */
 export const mergeResolvedLineas = (lineas: ResolvedLinea[]): ResolvedLinea[] => {
-  const byProduct = new Map<string, ResolvedLinea>();
+  const byKey = new Map<string, ResolvedLinea>();
 
   for (const linea of lineas) {
-    const existing = byProduct.get(linea.producto);
+    const precioKey = Math.round(Number(linea.precio_actual) * 100) / 100;
+    const key = `${linea.producto}|${precioKey}`;
+    const existing = byKey.get(key);
     if (!existing) {
-      byProduct.set(linea.producto, { ...linea });
+      byKey.set(key, { ...linea, precio_actual: precioKey });
       continue;
     }
 
     const cantidad = existing.cantidad + linea.cantidad;
     const subtotal =
       Math.round((existing.subtotal + linea.subtotal) * 100) / 100;
-    const precio_actual =
-      cantidad > 0 ? Math.round((subtotal / cantidad) * 100) / 100 : 0;
 
-    byProduct.set(linea.producto, {
+    byKey.set(key, {
       producto: linea.producto,
       cantidad,
-      precio_actual,
+      precio_actual: precioKey,
       subtotal,
     });
   }
 
-  return Array.from(byProduct.values());
+  return Array.from(byKey.values());
 };
 
 const unwrapTransactionError = (error: unknown): never => {
@@ -359,6 +373,14 @@ const validatePagoConPuntos = async (params: {
   }
 
   const member = await getClubMember(trimmedMemberId);
+  if (puntosUsados % PUNTOS_POR_PESO_CANJE !== 0) {
+    throw new ApiError(
+      400,
+      "Los puntos a canjear deben ser múltiplos de 10 (pesos enteros)",
+      true,
+      "INVALID_POINTS",
+    );
+  }
   const canje = calcularCanjePuntos({
     total,
     puntosDisponibles: member.puntosActuales,
@@ -436,12 +458,55 @@ export const createDetalleVenta = async (params: {
     inventarioId: params.inventarioId,
   });
 
+  await assertVentaPermitidaConCorte({
+    concesionId: params.concesionId,
+    sucursalId: params.sucursalId,
+    cajaId: caja.cajaId,
+    idUser: params.idUser,
+  });
+
   const lineas = mergeResolvedLineas(
     await resolveLineas(params.inventarioId, params.productos),
   );
   const total = computeTotal(lineas);
   const metodoPago = params.metodoPago ?? "efectivo";
   const puntosUsados = Math.max(0, Math.trunc(params.puntosUsados ?? 0));
+
+  const [concesionNombre, catalogRaw] = await Promise.all([
+    getConcessionNombre(params.concesionId),
+    listProducts(params.concesionId, true),
+  ]);
+  const catalogProducts: CatalogProductRef[] = catalogRaw.map((product) => ({
+    id: product.id,
+    nombre:
+      typeof product.nombre === "string"
+        ? product.nombre
+        : product.nombre != null
+          ? String(product.nombre)
+          : null,
+  }));
+
+  let stockDraws: InventoryDraw[];
+  try {
+    stockDraws = expandInventoryConsumptionDraws({
+      lineas,
+      catalogProducts,
+      concesionId: params.concesionId,
+      concesionNombre,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("CONSUMPTION_PRODUCT_NOT_FOUND:")) {
+      const [, triggerLabel, consumeTokens] = message.split(":");
+      throw new ApiError(
+        400,
+        `No se encontró el producto de inventario (${consumeTokens.replace(/\+/g, " ")}) requerido al vender "${triggerLabel}"`,
+        true,
+        "CONSUMPTION_PRODUCT_NOT_FOUND",
+      );
+    }
+    throw error;
+  }
 
   const pagoPuntos = await validatePagoConPuntos({
     total,
@@ -486,19 +551,19 @@ export const createDetalleVenta = async (params: {
       const prodRefs = new Map<string, FirebaseFirestore.DocumentReference>();
       const stockByProduct = new Map<string, number>();
 
-      for (const linea of lineas) {
-        if (prodRefs.has(linea.producto)) {
+      for (const draw of stockDraws) {
+        if (prodRefs.has(draw.producto)) {
           continue;
         }
 
         const prodRef = inventarioRef
           .collection(SUBCOLLECTIONS.PRODUCTOS)
-          .doc(linea.producto);
+          .doc(draw.producto);
         const prodDoc = await tx.get(prodRef);
         if (!prodDoc.exists) {
           throw new ApiError(
             400,
-            `Producto ${linea.producto} no está en el inventario`,
+            `Producto ${draw.producto} no está en el inventario`,
             true,
             "PRODUCT_NOT_IN_INVENTORY",
           );
@@ -508,33 +573,33 @@ export const createDetalleVenta = async (params: {
         const cantidadInicial = Number(data.cantidad_inicial ?? 0);
         const cantidadFinal = Number(data.cantidad_final ?? cantidadInicial);
 
-        prodRefs.set(linea.producto, prodRef);
-        stockByProduct.set(linea.producto, cantidadFinal);
+        prodRefs.set(draw.producto, prodRef);
+        stockByProduct.set(draw.producto, cantidadFinal);
       }
 
-      for (const linea of lineas) {
-        const prodRef = prodRefs.get(linea.producto);
+      for (const draw of stockDraws) {
+        const prodRef = prodRefs.get(draw.producto);
         if (!prodRef) {
           throw new ApiError(
             400,
-            `Producto ${linea.producto} no está en el inventario`,
+            `Producto ${draw.producto} no está en el inventario`,
             true,
             "PRODUCT_NOT_IN_INVENTORY",
           );
         }
 
-        const cantidadFinal = stockByProduct.get(linea.producto) ?? 0;
-        if (linea.cantidad > cantidadFinal) {
+        const cantidadFinal = stockByProduct.get(draw.producto) ?? 0;
+        if (draw.cantidad > cantidadFinal) {
           throw new ApiError(
             409,
-            `Stock insuficiente para el producto ${linea.producto}`,
+            `Stock insuficiente para el producto ${draw.producto}`,
             true,
             "INSUFFICIENT_STOCK",
           );
         }
 
-        const nuevaCantidad = cantidadFinal - linea.cantidad;
-        stockByProduct.set(linea.producto, nuevaCantidad);
+        const nuevaCantidad = cantidadFinal - draw.cantidad;
+        stockByProduct.set(draw.producto, nuevaCantidad);
 
         tx.set(
           prodRef,
@@ -547,8 +612,8 @@ export const createDetalleVenta = async (params: {
 
         logMovimientoInTransaction(tx, params.inventarioId, {
           tipo: "VENTA",
-          producto_id: linea.producto,
-          cantidad: -linea.cantidad,
+          producto_id: draw.producto,
+          cantidad: -draw.cantidad,
           cantidad_anterior: cantidadFinal,
           cantidad_nueva: nuevaCantidad,
           sucursal_id: params.sucursalId,
@@ -670,13 +735,50 @@ export const getDetalleVentaById = async (id: string) => {
   return { ...toData(doc), detalle: detalleSnap.docs.map(toData) };
 };
 
-export const listDetalleVentas = async (filters: {
+/** Lookup by business ventaId (e.g. V-123), not Firestore doc id. */
+export const findComprobanteByVentaId = async (
+  ventaId: string,
+): Promise<(Record<string, unknown> & { id: string }) | null> => {
+  const trimmed = ventaId.trim();
+  if (!trimmed) return null;
+
+  const snap = await col().where("ventaId", "==", trimmed).limit(1).get();
+  if (snap.empty) return null;
+  return toData(snap.docs[0]);
+};
+
+export type DetalleVentaListFilters = {
   concesionId?: string;
   sucursalId?: string;
   idUser?: string;
   cajaId?: string;
   inventarioId?: string;
-}) => {
+};
+
+/** @internal exported for unit tests */
+export const filterComprobantesByListFilters = <T extends Record<string, unknown>>(
+  results: T[],
+  filters: DetalleVentaListFilters,
+): T[] => {
+  let filtered = results;
+
+  if (filters.inventarioId && filters.concesionId) {
+    filtered = filtered.filter((r) => r.inventarioId === filters.inventarioId);
+  }
+  if (filters.sucursalId) {
+    filtered = filtered.filter((r) => r.sucursalId === filters.sucursalId);
+  }
+  if (filters.cajaId) {
+    filtered = filtered.filter((r) => r.cajaId === filters.cajaId);
+  }
+  if (filters.idUser) {
+    filtered = filtered.filter((r) => r.idUser === filters.idUser);
+  }
+
+  return filtered;
+};
+
+export const listDetalleVentas = async (filters: DetalleVentaListFilters) => {
   let query: FirebaseFirestore.Query = col();
   if (filters.concesionId) {
     query = query.where("concesionId", "==", filters.concesionId);
@@ -687,18 +789,7 @@ export const listDetalleVentas = async (filters: {
   const snap = await query.get();
   let results = snap.docs.map(toData);
 
-  if (filters.inventarioId && filters.concesionId) {
-    results = results.filter((r) => r.inventarioId === filters.inventarioId);
-  }
-  if (filters.sucursalId) {
-    results = results.filter((r) => r.sucursalId === filters.sucursalId);
-  }
-  if (filters.cajaId) {
-    results = results.filter((r) => r.cajaId === filters.cajaId);
-  }
-  if (filters.idUser) {
-    results = results.filter((r) => r.idUser === filters.idUser);
-  }
+  results = filterComprobantesByListFilters(results, filters);
 
   results.sort((a, b) => {
     const ta = (a.fecha as { _seconds?: number })?._seconds

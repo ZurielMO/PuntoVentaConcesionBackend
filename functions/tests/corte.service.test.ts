@@ -5,9 +5,19 @@ import {
   aggregateTiposVentaFromVentas,
   aggregateProductoReporteFromVentas,
   buildReporteProductoTotales,
+  aggregateFierabonadosFromVentas,
   aggregateCombosFromVentas,
   computeDiferenciaCaja,
+  buildCorteWritePayload,
+  CERVEZA_ABONADO_BENEFIT_ID,
+  ICE_2X1_BENEFIT_ID,
+  PAPAS_2X1_BENEFIT_ID,
 } from "../src/services/corte.service";
+import {
+  assertNoCorteCerradoForVenta,
+  CORTE_CLOSED_VENTA_MESSAGE,
+} from "../src/services/corte-guard.service";
+import { ApiError } from "../src/utils/api-error";
 
 describe("computeDiferenciaCaja", () => {
   it("calcula sobrante cuando lo contado supera lo esperado", () => {
@@ -297,7 +307,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 80,
           abonado: {
-            benefitId: "ice-2x1",
+            benefitId: ICE_2X1_BENEFIT_ID,
             titulo: "ICE 2x1",
             montoTotal: 80,
             montoDescuento: 40,
@@ -307,7 +317,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 50,
           abonado: {
-            benefitId: "ice-2x1",
+            benefitId: ICE_2X1_BENEFIT_ID,
             titulo: "ICE 2x1",
             montoTotal: 120,
             montoDescuento: 40,
@@ -321,6 +331,50 @@ describe("aggregatePromociones2x1FromVentas", () => {
       montoDescuento: 80,
       unidadesGratis: 2,
       cantidadTransacciones: 2,
+    });
+  });
+
+  it("incluye papas 2x1 en promociones 2x1 del corte", () => {
+    expect(
+      aggregatePromociones2x1FromVentas([
+        {
+          total: 150,
+          abonado: {
+            benefitId: PAPAS_2X1_BENEFIT_ID,
+            titulo: "Papas 2x1",
+            montoTotal: 150,
+            montoDescuento: 150,
+            unidadesGratis: 1,
+          },
+        },
+      ]),
+    ).toEqual({
+      montoTotal: 150,
+      montoDescuento: 150,
+      unidadesGratis: 1,
+      cantidadTransacciones: 1,
+    });
+  });
+
+  it("ignora precio abonado cerveza (no es 2x1)", () => {
+    expect(
+      aggregatePromociones2x1FromVentas([
+        {
+          total: 450,
+          abonado: {
+            benefitId: CERVEZA_ABONADO_BENEFIT_ID,
+            titulo: "Precio abonado cerveza",
+            montoTotal: 450,
+            montoDescuento: 200,
+            unidadesGratis: 0,
+          },
+        },
+      ]),
+    ).toEqual({
+      montoTotal: 0,
+      montoDescuento: 0,
+      unidadesGratis: 0,
+      cantidadTransacciones: 0,
     });
   });
 
@@ -505,6 +559,99 @@ describe("aggregateProductoReporteFromVentas", () => {
     expect(totales.ventasTotales).toBe(790);
     expect(totales.puntosCanjeados).toBe(90);
     expect(totales.dineroReal).toBe(700);
+  });
+});
+
+describe("aggregateFierabonadosFromVentas", () => {
+  it("suma cervezas vendidas a precio abonado", () => {
+    expect(
+      aggregateFierabonadosFromVentas([
+        {
+          total: 450,
+          abonado: {
+            benefitId: CERVEZA_ABONADO_BENEFIT_ID,
+            titulo: "Precio abonado cerveza",
+            montoTotal: 450,
+            montoDescuento: 200,
+            unidadesGratis: 0,
+          },
+          lineasVenta: [
+            { producto: "cerveza1", cantidad: 5, precio_actual: 90 },
+          ],
+        },
+        {
+          total: 80,
+          abonado: {
+            benefitId: ICE_2X1_BENEFIT_ID,
+            titulo: "ICE 2x1",
+            montoTotal: 80,
+            montoDescuento: 40,
+            unidadesGratis: 1,
+          },
+        },
+      ]),
+    ).toEqual({
+      cantidadUnidades: 5,
+      montoTotal: 450,
+      montoDescuento: 200,
+      cantidadTransacciones: 1,
+    });
+  });
+});
+
+describe("assertNoCorteCerradoForVenta", () => {
+  it("rechaza venta si hay corte cerrado hoy", () => {
+    expect(() => assertNoCorteCerradoForVenta({ id: "corte-1" })).toThrow(
+      CORTE_CLOSED_VENTA_MESSAGE,
+    );
+  });
+
+  it("usa código CORTE_ALREADY_CLOSED (409)", () => {
+    try {
+      assertNoCorteCerradoForVenta({ id: "corte-1" });
+      fail("expected ApiError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError);
+      const apiError = error as ApiError;
+      expect(apiError.statusCode).toBe(409);
+      expect(apiError.code).toBe("CORTE_ALREADY_CLOSED");
+    }
+  });
+
+  it("permite venta si no hay corte cerrado hoy", () => {
+    expect(() => assertNoCorteCerradoForVenta(null)).not.toThrow();
+    expect(() => assertNoCorteCerradoForVenta(undefined)).not.toThrow();
+  });
+});
+
+describe("buildCorteWritePayload", () => {
+  it("persiste cajaId y cajaNombre al cerrar corte", () => {
+    const payload = buildCorteWritePayload(
+      {
+        concesionId: "c1",
+        sucursalId: "s1",
+        idUser: "user-1",
+        ventaId: null,
+        cajaId: "caja-a",
+        cajaNombre: "Caja 1",
+      },
+      {
+        fecha: "2026-07-28",
+        estatus: "CERRADO",
+        totalReal: 100,
+        totalCaja: 80,
+        efectivoContado: 80,
+        diferenciaCaja: 0,
+        jornadaId: "2026-07-28__J1",
+        inventarioId: "inv-1",
+      },
+    );
+
+    expect(payload.cajaId).toBe("caja-a");
+    expect(payload.cajaNombre).toBe("Caja 1");
+    expect(payload.estatus).toBe("CERRADO");
+    expect(payload.fecha).toBe("2026-07-28");
+    expect(payload.idUser).toBe("user-1");
   });
 });
 

@@ -57,6 +57,7 @@ describe("replaceConcession", () => {
         activo: true,
         imagenes: ["https://cdn.example/logo.png"],
         idUser: "user-1",
+        tipo: "GENERAL",
         createdAt: existing.createdAt,
         updatedAt: FieldValue.serverTimestamp(),
       }),
