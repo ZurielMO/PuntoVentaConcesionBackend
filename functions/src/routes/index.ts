@@ -21,15 +21,23 @@ import combosRoutes from "./combos.routes";
 import descuentosRoutes from "./descuentos.routes";
 import trabajadoresClubRoutes from "./trabajadores-club.routes";
 import loyaltyRoutes from "./loyalty.routes";
+import { getBuildInfo } from "../config/build-info";
 
 const router = Router();
 
 // GET / (equivale a GET /api) -> health/links
+// `revision` y `commit` permiten detectar un deploy rancio con una sola
+// petición, sin deducirlo del spec de Swagger.
 router.get("/", (_req: Request, res: Response) => {
+  const build = getBuildInfo();
+
   res.status(200).json({
     success: true,
     service: "POS Concesiones Estadio - API",
     status: "ok",
+    revision: process.env.K_REVISION ?? null,
+    commit: build.commit,
+    builtAt: build.builtAt,
     timestamp: new Date().toISOString(),
     docs: "/api-docs",
   });

@@ -63,6 +63,14 @@ jobs:
           cd functions
           npm ci
 
+      - name: Stamp build info
+        # Lo sirve el health (GET /apiV2) para saber qué commit corre en producción.
+        # Va en un JSON propio y no en `functions/.env`: un .env en el deploy
+        # reemplazaría las variables de entorno ya configuradas en la function.
+        run: |
+          node -e "require('fs').writeFileSync('functions/build-info.json', JSON.stringify({ commit: process.env.GITHUB_SHA ?? null, builtAt: new Date().toISOString() }, null, 2) + '\n')"
+          cat functions/build-info.json
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

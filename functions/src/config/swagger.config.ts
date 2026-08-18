@@ -390,6 +390,9 @@ const swaggerDefinition = {
       put: { tags: ["Users"], summary: "Actualizar", security: bearer, parameters: [idParam], requestBody: json("UpdateUser"), responses: { 200: ok("OK") } },
       delete: { tags: ["Users"], summary: "Eliminar (soft)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminado") } },
     },
+    "/users/{id}/hard": {
+      delete: { tags: ["Users"], summary: "Eliminar permanente (SUPERADMIN)", security: bearer, parameters: [idParam], responses: { 204: ok("Eliminado") } },
+    },
     "/detalle-venta/ventas/{ventaId}/concesiones/{concesionId}/sucursales/{sucursalId}/inventarios/{inventarioId}": {
       post: { tags: ["DetalleVenta"], summary: "Crear comprobante", security: bearer, parameters: [{ in: "path", name: "ventaId", required: true, schema: { type: "string" } }, { in: "path", name: "concesionId", required: true, schema: { type: "string" } }, { in: "path", name: "sucursalId", required: true, schema: { type: "string" } }, { in: "path", name: "inventarioId", required: true, schema: { type: "string" } }], requestBody: json("CreateDetalleVenta"), responses: { 201: ok("Creado") } },
     },
