@@ -21,6 +21,7 @@ const router = Router();
 router.use(authMiddleware);
 
 router.get("/resumen", requireAuthenticated, q.getCorteResumen);
+router.get("/reporte", requireAuthenticated, q.getReporteCortes);
 router.post(
   "/cerrar",
   requireCorteCreateAccess,

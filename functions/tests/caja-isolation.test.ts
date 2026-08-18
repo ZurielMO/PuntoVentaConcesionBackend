@@ -116,4 +116,40 @@ describe("matchesCorteCerradoHoy", () => {
       }, fecha),
     ).toBe(false);
   });
+
+  it("bloquea al mismo cajero con corte legacy sin cajaId", () => {
+    const corteLegacy = {
+      estatus: "CERRADO",
+      fecha,
+      concesionId: "c1",
+      sucursalId: "s1",
+      idUser: "user-a",
+    };
+
+    expect(
+      matchesCorteCerradoHoy(
+        corteLegacy,
+        {
+          concesionId: "c1",
+          sucursalId: "s1",
+          cajaId: "caja-a",
+          idUser: "user-a",
+        },
+        fecha,
+      ),
+    ).toBe(true);
+
+    expect(
+      matchesCorteCerradoHoy(
+        corteLegacy,
+        {
+          concesionId: "c1",
+          sucursalId: "s1",
+          cajaId: "caja-a",
+          idUser: "user-b",
+        },
+        fecha,
+      ),
+    ).toBe(false);
+  });
 });

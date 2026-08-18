@@ -15,6 +15,9 @@ export const todayIsoDate = () => new Date().toISOString().slice(0, 10);
 export const CORTE_CLOSED_VENTA_MESSAGE =
   "El corte de jornada ya fue cerrado. No se pueden registrar más ventas.";
 
+const hasCajaId = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
 /** @internal exported for unit tests */
 export const matchesCorteCerradoHoy = (
   data: Record<string, unknown>,
@@ -31,7 +34,14 @@ export const matchesCorteCerradoHoy = (
     return false;
   }
   if (filters.cajaId) {
-    return data.cajaId === filters.cajaId;
+    if (hasCajaId(data.cajaId)) {
+      return data.cajaId === filters.cajaId;
+    }
+    // Legacy: cortes cerrados sin cajaId solo bloquean al mismo cajero.
+    if (filters.idUser) {
+      return data.idUser === filters.idUser;
+    }
+    return false;
   }
   if (filters.idUser) {
     return data.idUser === filters.idUser;
@@ -43,6 +53,9 @@ export const matchesCorteCerradoHoy = (
  * Busca un corte con estatus CERRADO cuya `fecha` sea hoy (ISO).
  * El bloqueo se levanta al día siguiente automáticamente (nueva fecha).
  * Un corte cerrado es por caja y día cuando `cajaId` está en los filtros.
+ *
+ * No filtra `cajaId` en Firestore: permite detectar cortes legacy sin ese
+ * campo y emparejarlos por `idUser` en memoria.
  */
 export const findCorteCerradoHoy = async (
   filters: OperationalListFilters,
@@ -54,9 +67,7 @@ export const findCorteCerradoHoy = async (
   if (filters.sucursalId) {
     query = query.where("sucursalId", "==", filters.sucursalId);
   }
-  if (filters.cajaId) {
-    query = query.where("cajaId", "==", filters.cajaId);
-  } else if (filters.idUser) {
+  if (!filters.cajaId && filters.idUser) {
     query = query.where("idUser", "==", filters.idUser);
   }
 

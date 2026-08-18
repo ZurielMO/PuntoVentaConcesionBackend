@@ -8,20 +8,27 @@ import { normalizeRecordImageUrls } from "./storage.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.CONCESIONES);
 
-const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } =>
-  normalizeRecordImageUrls({
+const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } => {
+  const data = normalizeRecordImageUrls({
     id: doc.id,
     ...doc.data(),
   });
+  return {
+    ...data,
+    porcentajeComision: Number(data.porcentajeComision ?? 0),
+    tipo: data.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL",
+  };
+};
 
 export const listConcessions = async () => {
-  const snap = await col().where("activo", "==", true).get();
+  // Incluye desactivadas para administración (estado y reactivación en UI).
+  const snap = await col().get();
   return snap.docs.map(toData);
 };
 
 export const getConcessionById = async (id: string) => {
   const doc = await col().doc(id).get();
-  if (!doc.exists || doc.data()?.activo === false) {
+  if (!doc.exists) {
     throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
   }
   return toData(doc);
@@ -58,13 +65,21 @@ export const getConcessionNombre = async (
 };
 
 export const createConcession = async (
-  data: { nombre: string; activo?: boolean; imagenes?: string[] },
+  data: {
+    nombre: string;
+    activo?: boolean;
+    imagenes?: string[];
+    porcentajeComision?: number;
+    tipo?: "GENERAL" | "CERVECERIA";
+  },
   idUser?: string,
 ) => {
   const payload = {
     nombre: data.nombre,
     activo: data.activo ?? true,
     imagenes: data.imagenes ?? [],
+    porcentajeComision: data.porcentajeComision ?? 0,
+    tipo: data.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL",
     idUser: idUser ?? null,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -76,7 +91,13 @@ export const createConcession = async (
 
 export const replaceConcession = async (
   id: string,
-  data: { nombre: string; activo?: boolean; imagenes?: string[] },
+  data: {
+    nombre: string;
+    activo?: boolean;
+    imagenes?: string[];
+    porcentajeComision?: number;
+    tipo?: "GENERAL" | "CERVECERIA";
+  },
 ) => {
   const ref = col().doc(id);
   const doc = await ref.get();
@@ -84,13 +105,21 @@ export const replaceConcession = async (
     throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
   }
 
-  // Replace completo limpiando campos legacy: mantenemos solo el modelo actual.
+  // Replace del modelo actual; si `imagenes` no viene en el payload, se preserva.
   const existing = doc.data() ?? {};
+  const existingImagenes = Array.isArray(existing.imagenes)
+    ? (existing.imagenes as string[])
+    : [];
+  const existingTipo =
+    existing.tipo === "CERVECERIA" ? "CERVECERIA" : "GENERAL";
   await ref.set({
     nombre: data.nombre,
     activo: data.activo ?? true,
-    imagenes: data.imagenes ?? [],
+    imagenes: data.imagenes !== undefined ? data.imagenes : existingImagenes,
     idUser: existing.idUser ?? null,
+    porcentajeComision:
+      data.porcentajeComision ?? existing.porcentajeComision ?? 0,
+    tipo: data.tipo ?? existingTipo,
     createdAt: existing.createdAt ?? FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -109,6 +138,25 @@ export const softDeleteConcession = async (id: string) => {
     activo: false,
     updatedAt: FieldValue.serverTimestamp(),
   });
+};
+
+export const updateConcessionComision = async (
+  id: string,
+  porcentajeComision: number,
+) => {
+  const ref = col().doc(id);
+  const doc = await ref.get();
+  if (!doc.exists || doc.data()?.activo === false) {
+    throw new ApiError(404, "Concesión no encontrada", true, "NOT_FOUND");
+  }
+
+  await ref.update({
+    porcentajeComision,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  const updated = await ref.get();
+  return toData(updated);
 };
 
 // ---------------------------------------------------------------------------
@@ -255,6 +303,27 @@ export const appendConcessionImages = async (
   });
   const updated = await ref.get();
   return toData(updated);
+};
+
+/**
+ * Reemplaza el logo/imágenes de la concesión (UI de logo único).
+ * Devuelve las URLs previas para borrarlas de Storage.
+ */
+export const replaceConcessionImages = async (
+  id: string,
+  newUrls: string[],
+) => {
+  const concession = await getConcessionById(id);
+  const previousUrls = [
+    ...((concession.imagenes as string[] | undefined) ?? []),
+  ].filter((u): u is string => typeof u === "string" && u.length > 0);
+  const ref = col().doc(id);
+  await ref.update({
+    imagenes: newUrls,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const updated = await ref.get();
+  return { updated: toData(updated), previousUrls };
 };
 
 export const removeConcessionImageAtIndex = async (id: string, index: number) => {

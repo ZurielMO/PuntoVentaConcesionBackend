@@ -1,6 +1,7 @@
 const DEFAULT_CORS_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
+  "https://foodmarket.clubleon.mx",
 ] as const;
 
 function parseOrigins(raw: string | undefined): string[] {
@@ -11,12 +12,12 @@ function parseOrigins(raw: string | undefined): string[] {
 }
 
 function readConfiguredOrigins(): string[] {
-  const fromEnv = parseOrigins(process.env.CORS_ALLOWED_ORIGINS);
-  if (fromEnv.length > 0) {
-    return fromEnv;
-  }
-
-  return [...DEFAULT_CORS_ORIGINS];
+  return [
+    ...new Set([
+      ...DEFAULT_CORS_ORIGINS,
+      ...parseOrigins(process.env.CORS_ALLOWED_ORIGINS),
+    ]),
+  ];
 }
 
 export function getAllowedCorsOriginsWithStore(): string[] {

@@ -63,12 +63,15 @@ export const storagePathFromUrl = (url: string): string | null => {
   return null;
 };
 
-/** Normaliza URLs viejas con token a URL pública (misma ruta en Storage). */
+/** Normaliza URLs viejas con token a URL pública (misma ruta y bucket). */
 export const normalizeFirebaseImageUrl = (url: string): string => {
   const path = storagePathFromUrl(url);
   if (!path) return url;
-  const bucket = storage.bucket();
-  return buildFirebasePublicUrl(bucket.name, path);
+  const bucketFromUrl =
+    url.match(/\/b\/([^/]+)\//)?.[1] ??
+    url.match(/storage\.googleapis\.com\/([^/]+)\//)?.[1];
+  const bucketName = bucketFromUrl ?? storage.bucket().name;
+  return buildFirebasePublicUrl(bucketName, path);
 };
 
 export const uploadImageToPath = async (

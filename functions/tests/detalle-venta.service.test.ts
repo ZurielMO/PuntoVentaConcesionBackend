@@ -23,13 +23,13 @@ describe("resolvePrecio", () => {
 });
 
 describe("mergeResolvedLineas", () => {
-  it("combina cantidades y subtotales del mismo producto", () => {
+  it("combina cantidades del mismo producto al mismo precio", () => {
     const merged = mergeResolvedLineas([
       {
         producto: "ice-grande",
         cantidad: 1,
-        precio_actual: 50,
-        subtotal: 50,
+        precio_actual: 80,
+        subtotal: 80,
       },
       {
         producto: "gomitas",
@@ -51,9 +51,104 @@ describe("mergeResolvedLineas", () => {
     expect(ice).toEqual({
       producto: "ice-grande",
       cantidad: 2,
-      precio_actual: 65,
-      subtotal: 130,
+      precio_actual: 80,
+      subtotal: 160,
     });
+  });
+
+  it("no promedia 2x1: conserva pagada @ catálogo y cortesía @ $0", () => {
+    const merged = mergeResolvedLineas([
+      {
+        producto: "papas-grandes",
+        cantidad: 1,
+        precio_actual: 150,
+        subtotal: 150,
+      },
+      {
+        producto: "papas-grandes",
+        cantidad: 1,
+        precio_actual: 0,
+        subtotal: 0,
+      },
+    ]);
+
+    expect(merged).toEqual([
+      {
+        producto: "papas-grandes",
+        cantidad: 1,
+        precio_actual: 150,
+        subtotal: 150,
+      },
+      {
+        producto: "papas-grandes",
+        cantidad: 1,
+        precio_actual: 0,
+        subtotal: 0,
+      },
+    ]);
+
+    // Regresión: el merge viejo (solo por producto) hacía 2 × $75.
+    expect(merged).not.toEqual([
+      {
+        producto: "papas-grandes",
+        cantidad: 2,
+        precio_actual: 75,
+        subtotal: 150,
+      },
+    ]);
+  });
+
+  it("ICE 2x1: misma forma pagada @ catálogo + cortesía @ $0", () => {
+    const merged = mergeResolvedLineas([
+      {
+        producto: "ice-grande",
+        cantidad: 1,
+        precio_actual: 80,
+        subtotal: 80,
+      },
+      {
+        producto: "ice-grande",
+        cantidad: 1,
+        precio_actual: 0,
+        subtotal: 0,
+      },
+    ]);
+
+    expect(merged).toEqual([
+      {
+        producto: "ice-grande",
+        cantidad: 1,
+        precio_actual: 80,
+        subtotal: 80,
+      },
+      {
+        producto: "ice-grande",
+        cantidad: 1,
+        precio_actual: 0,
+        subtotal: 0,
+      },
+    ]);
+  });
+
+  it("conserva distinto precio del mismo producto sin promediar", () => {
+    const merged = mergeResolvedLineas([
+      {
+        producto: "ice-grande",
+        cantidad: 1,
+        precio_actual: 50,
+        subtotal: 50,
+      },
+      {
+        producto: "ice-grande",
+        cantidad: 1,
+        precio_actual: 80,
+        subtotal: 80,
+      },
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged.find((l) => l.precio_actual === 50)?.cantidad).toBe(1);
+    expect(merged.find((l) => l.precio_actual === 80)?.cantidad).toBe(1);
   });
 
   it("conserva líneas únicas sin cambios", () => {

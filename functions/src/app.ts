@@ -50,7 +50,8 @@ const isProductionRuntime =
   Boolean(process.env.K_SERVICE || process.env.FUNCTION_NAME);
 
 /**
- * En Cloud Functions el prefijo /api lo aporta el nombre de la function.
+ * En Cloud Functions el path de la function (p. ej. /api o /apiV2) lo aporta
+ * el nombre del export; Express recibe el resto del path.
  * En local reescribimos /api/* -> /* para que las rutas internas sean relativas.
  */
 app.use((req, _res, next) => {

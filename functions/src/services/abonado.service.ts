@@ -1,7 +1,6 @@
 import { admin } from "../config/firebase.admin";
 import {
   firestoreApp,
-  hasAppOficialCredentials,
   USUARIOS_APP_COLLECTION,
 } from "../config/app.firebase";
 import {
@@ -12,6 +11,7 @@ import {
   isOnceOnlyBenefit,
 } from "../config/abonado-benefits.config";
 import { getConcessionNombre } from "./concession.service";
+import { listDescuentos } from "./descuento.service";
 import { ApiError } from "../utils/api-error";
 
 type SeasonPassVerification = {
@@ -59,20 +59,37 @@ export interface ConsumeAbonadoBenefitResult {
 
 const usuariosCol = () => firestoreApp.collection(USUARIOS_APP_COLLECTION);
 
+const mapAppOficialFirestoreError = (error: unknown): never => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/PERMISSION_DENIED|Missing or insufficient permissions/i.test(message)) {
+    throw new ApiError(
+      503,
+      "No hay acceso a perfiles de app-oficial-leon. Configura SERVICE_ACCOUNT_APP_OFICIAL o concede roles/datastore.user al service account de apiV2 en ese proyecto.",
+      false,
+      "APP_OFICIAL_PERMISSION_DENIED",
+    );
+  }
+  throw error;
+};
+
 const getUserDocumentByUid = async (uid: string) => {
-  const directRef = usuariosCol().doc(uid);
-  const directSnap = await directRef.get();
-  if (directSnap.exists) {
-    return { ref: directRef, snap: directSnap };
-  }
+  try {
+    const directRef = usuariosCol().doc(uid);
+    const directSnap = await directRef.get();
+    if (directSnap.exists) {
+      return { ref: directRef, snap: directSnap };
+    }
 
-  const snapshot = await usuariosCol().where("uid", "==", uid).limit(1).get();
-  if (snapshot.empty) {
-    return null;
-  }
+    const snapshot = await usuariosCol().where("uid", "==", uid).limit(1).get();
+    if (snapshot.empty) {
+      return null;
+    }
 
-  const snap = snapshot.docs[0];
-  return { ref: snap.ref, snap };
+    const snap = snapshot.docs[0];
+    return { ref: snap.ref, snap };
+  } catch (error) {
+    return mapAppOficialFirestoreError(error);
+  }
 };
 
 const serializeTimestamp = (value: unknown): string | undefined => {
@@ -90,9 +107,63 @@ const serializeTimestamp = (value: unknown): string | undefined => {
   return undefined;
 };
 
+const loadActive2x1ProductIds = async (
+  concesionId?: string | null,
+): Promise<string[]> => {
+  if (!concesionId?.trim()) return [];
+
+  const descuentos = (await listDescuentos({
+    concesionId: concesionId.trim(),
+    includeInactive: true,
+  })) as Array<{
+    activo?: boolean;
+    tipo?: string;
+    producto_ids?: unknown;
+  }>;
+
+  return descuentos
+    .filter(
+      (item) =>
+        item.activo !== false &&
+        String(item.tipo ?? "").toUpperCase() === "2X1",
+    )
+    .flatMap((item) =>
+      Array.isArray(item.producto_ids)
+        ? item.producto_ids.map((id) => String(id).trim()).filter(Boolean)
+        : [],
+    );
+};
+
+const attachActive2x1ProductIds = (
+  definitions: AbonadoBenefitDefinition[],
+  productIds: string[],
+): AbonadoBenefitDefinition[] => {
+  if (productIds.length === 0) {
+    return definitions;
+  }
+
+  const withIce = definitions.some((item) => item.id === "ice-2x1")
+    ? definitions
+    : [
+        ...definitions,
+        ...ABONADO_BENEFITS_CATALOG.filter((item) => item.id === "ice-2x1"),
+      ];
+
+  return withIce.map((definition) => {
+    if (definition.tipo !== "buy_one_get_one") {
+      return definition;
+    }
+    return {
+      ...definition,
+      productIds: [...new Set([...(definition.productIds ?? []), ...productIds])],
+    };
+  });
+};
+
 const buildBenefitStatuses = (
   verification: SeasonPassVerification | undefined,
   definitions: AbonadoBenefitDefinition[],
+  options?: { keepOnceOnlyAvailable?: boolean },
 ): AbonadoBenefitStatus[] => {
   const consumed = verification?.posBeneficiosConsumidos ?? {};
 
@@ -112,30 +183,20 @@ const buildBenefitStatuses = (
       subscriberPrice: definition.subscriberPrice,
       // onceOnly (ICE 2x1): unavailable after first consume.
       // Permanent benefits (cerveza abonado): always disponible.
-      disponible: !isOnceOnlyBenefit(definition) || !consumidoAt,
+      disponible:
+        options?.keepOnceOnlyAvailable === true ||
+        !isOnceOnlyBenefit(definition) ||
+        !consumidoAt,
       consumidoAt,
       consumidoVentaId: usage?.ventaId,
     };
   });
 };
 
-const assertAppOficialReady = (): void => {
-  if (!hasAppOficialCredentials) {
-    throw new ApiError(
-      503,
-      "Integración de abonados no configurada (SERVICE_ACCOUNT_APP_OFICIAL)",
-      true,
-      "ABONADO_NOT_CONFIGURED",
-    );
-  }
-};
-
 export const verifyAbonado = async (
   memberId: string,
   concesionId?: string | null,
 ): Promise<AbonadoVerificationResult> => {
-  assertAppOficialReady();
-
   const trimmedId = memberId.trim();
   if (!trimmedId) {
     throw new ApiError(400, "ID de abonado inválido", true, "INVALID_MEMBER_ID");
@@ -170,11 +231,29 @@ export const verifyAbonado = async (
   const concesionNombre = concesionId
     ? await getConcessionNombre(concesionId)
     : null;
-  const scopedDefinitions = filterBenefitsForConcesion(
+  let scopedDefinitions = filterBenefitsForConcesion(
     ABONADO_BENEFITS_CATALOG,
     concesionId,
     concesionNombre,
   );
+  let active2x1ProductIds: string[] = [];
+  try {
+    active2x1ProductIds = await loadActive2x1ProductIds(concesionId);
+    scopedDefinitions = attachActive2x1ProductIds(
+      scopedDefinitions,
+      active2x1ProductIds,
+    );
+  } catch (error) {
+    console.error("No se pudieron leer descuentos 2x1 activos", error);
+  }
+
+  console.log("[abonado] verify", {
+    memberId: userDocument.snap.id,
+    concesionId: concesionId ?? null,
+    concesionNombre,
+    benefitIds: scopedDefinitions.map((item) => item.id),
+    active2x1ProductIds,
+  });
 
   return {
     memberId: userDocument.snap.id,
@@ -183,7 +262,9 @@ export const verifyAbonado = async (
     isSubscriber: true,
     event: verification?.event,
     season: verification?.season,
-    benefits: buildBenefitStatuses(verification, scopedDefinitions),
+    benefits: buildBenefitStatuses(verification, scopedDefinitions, {
+      keepOnceOnlyAvailable: active2x1ProductIds.length > 0,
+    }),
   };
 };
 
@@ -192,8 +273,6 @@ export const consumeAbonadoBenefit = async (params: {
   benefitId: string;
   ventaId: string;
 }): Promise<ConsumeAbonadoBenefitResult> => {
-  assertAppOficialReady();
-
   const trimmedId = params.memberId.trim();
   const benefitId = params.benefitId.trim();
   const ventaId = params.ventaId.trim();

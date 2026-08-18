@@ -2,16 +2,26 @@ import axios from "axios";
 
 const mockMovGet = jest.fn();
 const mockMovSet = jest.fn();
+const mockUserDocGet = jest.fn();
+const mockUserDocSet = jest.fn();
+const mockWhereGet = jest.fn();
 
 jest.mock("../src/config/app.firebase", () => ({
   firestoreApp: {
     collection: jest.fn(() => ({
       doc: jest.fn(() => ({
+        get: (...args: unknown[]) => mockUserDocGet(...args),
+        set: (...args: unknown[]) => mockUserDocSet(...args),
         collection: jest.fn(() => ({
           doc: jest.fn(() => ({
             get: (...args: unknown[]) => mockMovGet(...args),
             set: (...args: unknown[]) => mockMovSet(...args),
           })),
+        })),
+      })),
+      where: jest.fn(() => ({
+        limit: jest.fn(() => ({
+          get: (...args: unknown[]) => mockWhereGet(...args),
         })),
       })),
     })),
@@ -46,6 +56,9 @@ describe("loyalty-points.service", () => {
     jest.clearAllMocks();
     mockMovGet.mockResolvedValue({ exists: false });
     mockMovSet.mockResolvedValue(undefined);
+    mockUserDocGet.mockResolvedValue({ exists: false, data: () => undefined });
+    mockUserDocSet.mockResolvedValue(undefined);
+    mockWhereGet.mockResolvedValue({ empty: true, docs: [] });
     (mockedAxios.isAxiosError as unknown as jest.Mock).mockImplementation(
       (payload: unknown) =>
         Boolean(
@@ -170,6 +183,29 @@ describe("loyalty-points.service", () => {
         }),
       }),
     );
+  });
+
+  it("getClubMember usa usuariosApp si BackendCL no responde", async () => {
+    mockedAxios.get.mockRejectedValueOnce(new Error("ECONNRESET"));
+    mockUserDocGet.mockResolvedValueOnce({
+      exists: true,
+      id: "uid-1",
+      data: () => ({
+        uid: "uid-1",
+        nombre: "Ana Socio",
+        email: "ana@test.com",
+        puntosActuales: 80,
+      }),
+    });
+
+    const member = await getClubMember("uid-1");
+
+    expect(member).toEqual({
+      id: "uid-1",
+      nombre: "Ana Socio",
+      email: "ana@test.com",
+      puntosActuales: 80,
+    });
   });
 
   it("assignPointsBySale mapea 403 como permisos insuficientes", async () => {
@@ -304,5 +340,47 @@ describe("loyalty-points.service", () => {
       dinero: 320,
       descripcion: "Venta POS V-123",
     });
+  });
+
+  it("assignPointsBySale acredita en usuariosApp si BackendCL no responde", async () => {
+    mockedAxios.post.mockRejectedValueOnce(new Error("ECONNRESET"));
+    mockUserDocGet.mockResolvedValue({
+      exists: true,
+      id: "uid-2",
+      data: () => ({
+        uid: "uid-2",
+        puntosActuales: 100,
+      }),
+    });
+
+    const result = await assignPointsBySale({
+      memberId: "uid-2",
+      total: 90,
+      ventaId: "V-icee-1",
+    });
+
+    expect(result).toEqual({
+      memberId: "uid-2",
+      montoVenta: 90,
+      puntosAsignados: 9,
+      puntosActuales: 109,
+      descripcion: "Venta POS V-icee-1",
+      externalResponse: { source: "usuariosApp", alreadyAssigned: false },
+    });
+    expect(mockMovSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "pos_acc_V-icee-1",
+        tipo: "ACUMULACION",
+        puntos: 9,
+        saldoAnterior: 100,
+        saldoNuevo: 109,
+        origen: "pos",
+        origenId: "V-icee-1",
+      }),
+    );
+    expect(mockUserDocSet).toHaveBeenCalledWith(
+      expect.objectContaining({ puntosActuales: 109 }),
+      { merge: true },
+    );
   });
 });

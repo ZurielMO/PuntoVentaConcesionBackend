@@ -22,7 +22,10 @@ import {
   createZonaSchema,
   updateZonaSchema,
 } from "../middleware/validators/zona.validator";
-import { upsertInventarioProductoSchema } from "../middleware/validators/inventario.validator";
+import {
+  ajustarInventarioProductoSchema,
+  upsertInventarioProductoSchema,
+} from "../middleware/validators/inventario.validator";
 import {
   createTicketSchema,
   updateTicketSchema,
@@ -80,7 +83,7 @@ const swaggerDefinition = {
       variables: {
         protocol: { default: "https", enum: ["http", "https"] },
         host: {
-          default: "us-central1-puntoventacl.cloudfunctions.net",
+          default: "us-central1-puntoventacl.cloudfunctions.net/apiV2",
         },
       },
     },
@@ -119,6 +122,7 @@ const swaggerDefinition = {
       CreateZona: z2j(createZonaSchema),
       UpdateZona: z2j(updateZonaSchema),
       UpsertInventarioProducto: z2j(upsertInventarioProductoSchema),
+      AjustarInventarioProducto: z2j(ajustarInventarioProductoSchema),
       CreateTicket: z2j(createTicketSchema),
       UpdateTicket: z2j(updateTicketSchema),
       CreateCorte: z2j(createCorteSchema),
@@ -158,7 +162,7 @@ const swaggerDefinition = {
     "/concessions": {
       get: {
         tags: ["Concessions"],
-        summary: "Listar concesiones activas",
+        summary: "Listar concesiones (activas e inactivas)",
         security: bearer,
         responses: { 200: ok("Lista") },
       },
@@ -223,7 +227,20 @@ const swaggerDefinition = {
       post: { tags: ["Products"], summary: "Crear producto", security: bearer, parameters: [{ in: "path", name: "concesionId", required: true, schema: { type: "string" } }], requestBody: json("CreateProduct"), responses: { 201: ok("Creado") } },
     },
     "/products": {
-      get: { tags: ["Products"], summary: "Listar productos activos", security: bearer, responses: { 200: ok("Lista") } },
+      get: {
+        tags: ["Products"],
+        summary: "Listar productos (activos por defecto)",
+        security: bearer,
+        parameters: [
+          {
+            in: "query",
+            name: "includeInactive",
+            schema: { type: "boolean" },
+            description: "Incluir inactivos (ADMIN / SUPERADMIN)",
+          },
+        ],
+        responses: { 200: ok("Lista") },
+      },
       post: {
         tags: ["Products"],
         summary: "Crear producto (JSON o multipart con images)",
@@ -294,7 +311,20 @@ const swaggerDefinition = {
     },
     "/sucursales/{id}/cajas": { get: { tags: ["Sucursales"], summary: "Cajas de la sucursal", security: bearer, parameters: [idParam], responses: { 200: ok("Lista") } } },
     "/zonas": {
-      get: { tags: ["Zonas"], summary: "Listar activas", security: bearer, responses: { 200: ok("Lista") } },
+      get: {
+        tags: ["Zonas"],
+        summary: "Listar zonas (activas por defecto)",
+        security: bearer,
+        parameters: [
+          {
+            in: "query",
+            name: "includeInactive",
+            schema: { type: "boolean" },
+            description: "Incluir inactivas (SUPERADMIN)",
+          },
+        ],
+        responses: { 200: ok("Lista") },
+      },
       post: { tags: ["Zonas"], summary: "Crear", security: bearer, requestBody: json("CreateZona"), responses: { 201: ok("Creada") } },
     },
     "/zonas/{id}": {
@@ -321,6 +351,19 @@ const swaggerDefinition = {
       get: { tags: ["Inventarios"], summary: "Obtener producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], responses: { 200: ok("OK") } },
       put: { tags: ["Inventarios"], summary: "Upsert producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], requestBody: json("UpsertInventarioProducto"), responses: { 200: ok("OK") } },
       delete: { tags: ["Inventarios"], summary: "Eliminar producto", security: bearer, parameters: [idParam, { in: "path", name: "productoId", required: true, schema: { type: "string" } }], responses: { 204: ok("Eliminado") } },
+    },
+    "/inventarios/{id}/productos/{productoId}/ajustes": {
+      post: {
+        tags: ["Inventarios"],
+        summary: "Ajuste de stock (entrada/salida)",
+        security: bearer,
+        parameters: [
+          idParam,
+          { in: "path", name: "productoId", required: true, schema: { type: "string" } },
+        ],
+        requestBody: json("AjustarInventarioProducto"),
+        responses: { 200: ok("Ajuste aplicado") },
+      },
     },
     "/tickets": {
       get: { tags: ["Tickets"], summary: "Listar", security: bearer, responses: { 200: ok("Lista") } },

@@ -16,7 +16,7 @@ export interface BaseEntity {
 export interface User extends BaseEntity {
     uid: string;
     nombre: string;
-    fecha_nacimiento: string;
+    fecha_nacimiento?: string | null;
     email: string;
     rol: UserRole;
     activo: boolean;
@@ -28,11 +28,17 @@ export interface User extends BaseEntity {
     cajaId?: string | null;
 }
 
+export type ConcessionTipo = "GENERAL" | "CERVECERIA";
+
 export interface Concession extends BaseEntity {
     nombre: string;
     activo: boolean;
     imagenes: string[];
     idUser?: string | null;
+    /** Porcentaje de comisión del operador sobre venta neta (0–100). */
+    porcentajeComision?: number | null;
+    /** GENERAL = POS clásico; CERVECERIA = corte por conteo opcional. */
+    tipo?: ConcessionTipo;
 }
 
 export interface Zona extends BaseEntity {
@@ -46,12 +52,16 @@ export interface Caja extends BaseEntity {
     orden?: number;
 }
 
+export type SucursalModoOperacion = "POS" | "CONTEO";
+
 export interface Sucursal extends BaseEntity {
     concesion_id: string;
     zona_id: string;
     nombre: string | null;
     activo: boolean;
     cajas?: Caja[];
+    /** POS = cajas/vendedores; CONTEO = corte por inventario (cervecería). */
+    modo_operacion?: SucursalModoOperacion;
 }
 
 export interface Product extends BaseEntity {
@@ -94,6 +104,7 @@ export interface InventarioMovimiento extends BaseEntity {
     cajaNombre?: string | null;
     idUser?: string | null;
     ventaId?: string | null;
+    motivo?: string | null;
 }
 
 export interface Inventario extends BaseEntity {

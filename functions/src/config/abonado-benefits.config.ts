@@ -32,16 +32,6 @@ export const isOnceOnlyBenefit = (
   benefit: AbonadoBenefitDefinition,
 ): boolean => benefit.onceOnly === true;
 
-const parseCsv = (raw: string | undefined): string[] =>
-  (raw ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0);
-
-const parseProductIds = (raw: string | undefined): string[] => parseCsv(raw);
-
-const parseConcesionIds = (raw: string | undefined): string[] => parseCsv(raw);
-
 const normalizeConcesionNombre = (value?: string | null): string => {
   if (!value) return "";
   return value
@@ -78,31 +68,8 @@ export const benefitAppliesToConcesion = (
   );
 };
 
-export const ABONADO_BENEFITS_CATALOG: AbonadoBenefitDefinition[] = [
-  {
-    id: "ice-2x1",
-    titulo: "ICE 2x1",
-    descripcion: "Compra 1 ICE Grande y lleva otro gratis",
-    tipo: "buy_one_get_one",
-    onceOnly: true,
-    concesionIds: parseConcesionIds(process.env.ABONADO_ICE_CONCESION_IDS),
-    concesionNombreTokens: ["ice"],
-    productNameTokens: ["ice", "grande"],
-    productIds: parseProductIds(process.env.ABONADO_ICE_PRODUCT_IDS),
-  },
-  {
-    id: "cerveza-precio-abonado",
-    titulo: "Precio abonado cerveza",
-    descripcion: "Cerveza a precio especial para abonados",
-    tipo: "subscriber_price",
-    onceOnly: false,
-    concesionIds: parseConcesionIds(process.env.ABONADO_CERVEZA_CONCESION_IDS),
-    concesionNombreTokens: ["cervecer"],
-    productNameTokens: ["cerveza"],
-    productIds: parseProductIds(process.env.ABONADO_CERVEZA_PRODUCT_IDS),
-    subscriberPrice: Number(process.env.ABONADO_CERVEZA_SUBSCRIBER_PRICE ?? 90),
-  },
-];
+/** Disabled: POS QR only assigns Club León points. */
+export const ABONADO_BENEFITS_CATALOG: AbonadoBenefitDefinition[] = [];
 
 export const getBenefitDefinition = (
   benefitId: string,

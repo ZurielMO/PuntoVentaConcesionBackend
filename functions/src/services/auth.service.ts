@@ -69,33 +69,53 @@ export type UsuariosAppProfile = {
   [key: string]: unknown;
 };
 
+const mapAppOficialFirestoreError = (error: unknown): never => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/PERMISSION_DENIED|Missing or insufficient permissions/i.test(message)) {
+    throw new ApiError(
+      503,
+      "No hay acceso a perfiles de app-oficial-leon. Configura SERVICE_ACCOUNT_APP_OFICIAL o concede roles/datastore.user al service account de apiV2 en ese proyecto.",
+      false,
+      "APP_OFICIAL_PERMISSION_DENIED",
+    );
+  }
+  throw error;
+};
+
 export const findUsuariosAppProfile = async (
   uid: string,
   email?: string,
 ): Promise<UsuariosAppProfile | null> => {
-  const byDocId = await usuariosCol().doc(uid).get();
-  if (byDocId.exists) {
-    return { id: byDocId.id, ...(byDocId.data() as object) } as UsuariosAppProfile;
-  }
+  try {
+    const byDocId = await usuariosCol().doc(uid).get();
+    if (byDocId.exists) {
+      return {
+        id: byDocId.id,
+        ...(byDocId.data() as object),
+      } as UsuariosAppProfile;
+    }
 
-  const byUid = await usuariosCol().where("uid", "==", uid).limit(1).get();
-  if (!byUid.empty) {
-    const doc = byUid.docs[0];
-    return { id: doc.id, ...(doc.data() as object) } as UsuariosAppProfile;
-  }
-
-  if (email) {
-    const byEmail = await usuariosCol()
-      .where("email", "==", email.toLowerCase())
-      .limit(1)
-      .get();
-    if (!byEmail.empty) {
-      const doc = byEmail.docs[0];
+    const byUid = await usuariosCol().where("uid", "==", uid).limit(1).get();
+    if (!byUid.empty) {
+      const doc = byUid.docs[0];
       return { id: doc.id, ...(doc.data() as object) } as UsuariosAppProfile;
     }
-  }
 
-  return null;
+    if (email) {
+      const byEmail = await usuariosCol()
+        .where("email", "==", email.toLowerCase())
+        .limit(1)
+        .get();
+      if (!byEmail.empty) {
+        const doc = byEmail.docs[0];
+        return { id: doc.id, ...(doc.data() as object) } as UsuariosAppProfile;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    return mapAppOficialFirestoreError(error);
+  }
 };
 
 type LegacyPosUser = Record<string, unknown> & { id: string };

@@ -13,6 +13,12 @@ const router = Router();
 
 router.get("/activa", authMiddleware, q.getJornadaActiva);
 router.get(
+  "/disponibles",
+  authMiddleware,
+  requireAuthenticated,
+  q.getJornadasDisponibles,
+);
+router.get(
   "/:jornadaId/asignaciones-cajas",
   authMiddleware,
   requireAuthenticated,

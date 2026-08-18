@@ -237,6 +237,51 @@ export const ventaAcumulaPuntos = (params: {
   return true;
 };
 
+const getUsuariosAppByUid = async (
+  uid: string,
+): Promise<{ id: string; data: Record<string, unknown> } | null> => {
+  const directRef = firestoreApp.collection(USUARIOS_APP_COLLECTION).doc(uid);
+  const directSnap = await directRef.get();
+  if (directSnap.exists) {
+    return { id: directSnap.id, data: (directSnap.data() ?? {}) as Record<string, unknown> };
+  }
+
+  const snapshot = await firestoreApp
+    .collection(USUARIOS_APP_COLLECTION)
+    .where("uid", "==", uid)
+    .limit(1)
+    .get();
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const snap = snapshot.docs[0];
+  return { id: snap.id, data: (snap.data() ?? {}) as Record<string, unknown> };
+};
+
+const memberFromUsuariosApp = (
+  id: string,
+  data: Record<string, unknown>,
+  fallbackId: string,
+): ClubMemberData => {
+  const nombre =
+    (data.nombre as string | undefined)?.trim() ||
+    (data.displayName as string | undefined)?.trim() ||
+    "Socio";
+  const email = (data.email as string | undefined)?.trim() ?? "";
+  const puntosActuales = Number(data.puntosActuales ?? 0);
+
+  return {
+    id:
+      (data.uid as string | undefined)?.trim() ||
+      id ||
+      fallbackId,
+    nombre,
+    email,
+    puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
+  };
+};
+
 export const getClubMember = async (memberId: string): Promise<ClubMemberData> => {
   const trimmedId = memberId.trim();
   if (!trimmedId) {
@@ -253,6 +298,18 @@ export const getClubMember = async (memberId: string): Promise<ClubMemberData> =
     );
     return extractMember(resp.data, trimmedId);
   } catch (error) {
+    try {
+      const fromFirestore = await getUsuariosAppByUid(trimmedId);
+      if (fromFirestore) {
+        return memberFromUsuariosApp(
+          fromFirestore.id,
+          fromFirestore.data,
+          trimmedId,
+        );
+      }
+    } catch {
+      // Keep the original BackendCL error if Firestore is also unavailable.
+    }
     throw mapAxiosError(error, "No se pudo validar el socio en Club León");
   }
 };
@@ -442,6 +499,74 @@ export const cancelRedemptionHold = async (params: {
   }
 };
 
+const buildPosAccumulationMovementDocId = (ventaId: string): string =>
+  `pos_acc_${ventaId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120)}`;
+
+const assignPointsBySaleInUsuariosApp = async (params: {
+  memberId: string;
+  total: number;
+  ventaId: string;
+  puntosAsignados: number;
+  descripcion: string;
+}): Promise<AssignPointsBySaleResult> => {
+  const user = await getUsuariosAppByUid(params.memberId);
+  if (!user) {
+    throw new ApiError(404, "Socio no encontrado", true, "MEMBER_NOT_FOUND");
+  }
+
+  const userRef = firestoreApp.collection(USUARIOS_APP_COLLECTION).doc(user.id);
+  const docId = buildPosAccumulationMovementDocId(params.ventaId);
+  const movRef = userRef.collection(MOVIMIENTOS_PUNTOS_SUBCOLLECTION).doc(docId);
+  const existing = await movRef.get();
+  if (existing.exists) {
+    const data = existing.data() as { saldoNuevo?: number } | undefined;
+    const puntosActuales = Number(
+      data?.saldoNuevo ?? user.data.puntosActuales ?? 0,
+    );
+    return {
+      memberId: user.id,
+      montoVenta: params.total,
+      puntosAsignados: params.puntosAsignados,
+      puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
+      descripcion: params.descripcion,
+      externalResponse: { source: "usuariosApp", alreadyAssigned: true },
+    };
+  }
+
+  const saldoAnterior = Number(user.data.puntosActuales ?? 0);
+  const saldoNuevo = saldoAnterior + params.puntosAsignados;
+
+  await movRef.set({
+    id: docId,
+    usuarioId: user.id,
+    tipo: "ACUMULACION",
+    puntos: params.puntosAsignados,
+    saldoAnterior,
+    saldoNuevo,
+    origen: "pos",
+    origenId: params.ventaId,
+    referencia: params.ventaId,
+    descripcion: params.descripcion,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await userRef.set(
+    {
+      puntosActuales: saldoNuevo,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return {
+    memberId: user.id,
+    montoVenta: params.total,
+    puntosAsignados: params.puntosAsignados,
+    puntosActuales: saldoNuevo,
+    descripcion: params.descripcion,
+    externalResponse: { source: "usuariosApp", alreadyAssigned: false },
+  };
+};
+
 export const assignPointsBySale = async (params: {
   memberId: string;
   total: number;
@@ -490,6 +615,22 @@ export const assignPointsBySale = async (params: {
       externalResponse: resp.data,
     };
   } catch (error) {
+    try {
+      return await assignPointsBySaleInUsuariosApp({
+        memberId: trimmedId,
+        total,
+        ventaId,
+        puntosAsignados,
+        descripcion,
+      });
+    } catch (fallbackError) {
+      if (
+        fallbackError instanceof ApiError &&
+        fallbackError.code !== "MEMBER_NOT_FOUND"
+      ) {
+        throw fallbackError;
+      }
+    }
     throw mapAxiosError(error, "No se pudieron asignar los puntos en Club León");
   }
 };

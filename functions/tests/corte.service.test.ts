@@ -2,16 +2,22 @@ import {
   aggregateTotalsByMetodoPago,
   aggregateProductosFromVentas,
   aggregatePromociones2x1FromVentas,
+  aggregateTiposVentaFromVentas,
+  aggregateProductoReporteFromVentas,
+  buildReporteProductoTotales,
   aggregateFierabonadosFromVentas,
   aggregateCombosFromVentas,
   computeDiferenciaCaja,
+  buildCorteWritePayload,
   CERVEZA_ABONADO_BENEFIT_ID,
   ICE_2X1_BENEFIT_ID,
+  PAPAS_2X1_BENEFIT_ID,
 } from "../src/services/corte.service";
 import {
   assertNoCorteCerradoForVenta,
   CORTE_CLOSED_VENTA_MESSAGE,
 } from "../src/services/corte-guard.service";
+import { ApiError } from "../src/utils/api-error";
 
 describe("computeDiferenciaCaja", () => {
   it("calcula sobrante cuando lo contado supera lo esperado", () => {
@@ -328,6 +334,28 @@ describe("aggregatePromociones2x1FromVentas", () => {
     });
   });
 
+  it("incluye papas 2x1 en promociones 2x1 del corte", () => {
+    expect(
+      aggregatePromociones2x1FromVentas([
+        {
+          total: 150,
+          abonado: {
+            benefitId: PAPAS_2X1_BENEFIT_ID,
+            titulo: "Papas 2x1",
+            montoTotal: 150,
+            montoDescuento: 150,
+            unidadesGratis: 1,
+          },
+        },
+      ]),
+    ).toEqual({
+      montoTotal: 150,
+      montoDescuento: 150,
+      unidadesGratis: 1,
+      cantidadTransacciones: 1,
+    });
+  });
+
   it("ignora precio abonado cerveza (no es 2x1)", () => {
     expect(
       aggregatePromociones2x1FromVentas([
@@ -370,6 +398,167 @@ describe("aggregatePromociones2x1FromVentas", () => {
       unidadesGratis: 0,
       cantidadTransacciones: 0,
     });
+  });
+});
+
+describe("aggregateTiposVentaFromVentas", () => {
+  it("clasifica venta normal, abonado, abonado con puntos y normal con puntos", () => {
+    const rows = aggregateTiposVentaFromVentas([
+      {
+        total: 130,
+        metodoPago: "efectivo",
+        montoEfectivo: 130,
+      },
+      {
+        total: 390,
+        metodoPago: "tarjeta",
+        montoTarjeta: 390,
+      },
+      {
+        total: 180,
+        metodoPago: "efectivo",
+        montoEfectivo: 180,
+        abonado: {
+          benefitId: "cerveza-precio-abonado",
+          titulo: "Precio abonado cerveza",
+          montoTotal: 180,
+          montoDescuento: 80,
+          unidadesGratis: 0,
+        },
+      },
+      {
+        total: 270,
+        metodoPago: "tarjeta",
+        montoTarjeta: 270,
+        abonado: {
+          benefitId: "cerveza-precio-abonado",
+          titulo: "Precio abonado cerveza",
+          montoTotal: 270,
+          montoDescuento: 120,
+          unidadesGratis: 0,
+        },
+      },
+      {
+        total: 90,
+        metodoPago: "puntos",
+        puntosUsados: 900,
+        montoPuntos: 90,
+        abonado: {
+          benefitId: "cerveza-precio-abonado",
+          titulo: "Precio abonado cerveza",
+          montoTotal: 90,
+          montoDescuento: 40,
+          unidadesGratis: 0,
+        },
+      },
+    ]);
+
+    const byTipo = Object.fromEntries(rows.map((r) => [r.tipo, r]));
+
+    expect(byTipo.normal).toMatchObject({
+      transacciones: 2,
+      efectivo: 130,
+      tarjeta: 390,
+      puntosMonto: 0,
+      valorTotal: 520,
+    });
+    expect(byTipo.abonado).toMatchObject({
+      transacciones: 2,
+      efectivo: 180,
+      tarjeta: 270,
+      descuentoAbonado: 200,
+      valorTotal: 450,
+    });
+    expect(byTipo.abonado_puntos).toMatchObject({
+      transacciones: 1,
+      puntosMonto: 90,
+      puntosCanjeados: 900,
+      descuentoAbonado: 40,
+      valorTotal: 90,
+    });
+    expect(byTipo.normal_puntos).toMatchObject({
+      transacciones: 0,
+      efectivo: 0,
+      tarjeta: 0,
+      puntosMonto: 0,
+    });
+  });
+
+  it("siempre devuelve las 4 filas con etiquetas fijas", () => {
+    const rows = aggregateTiposVentaFromVentas([]);
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.tipo)).toEqual([
+      "normal",
+      "abonado",
+      "abonado_puntos",
+      "normal_puntos",
+    ]);
+    expect(rows[0].etiqueta).toBe("Venta normal");
+  });
+});
+
+describe("aggregateProductoReporteFromVentas", () => {
+  it("desglosa cantidades y montos regular, abonado, cortesías y puntos por producto", () => {
+    const byProduct = aggregateProductoReporteFromVentas([
+      {
+        total: 130,
+        metodoPago: "efectivo",
+        montoEfectivo: 130,
+        detalle: [
+          { producto: "cerveza", cantidad: 1, precio_actual: 130, subtotal: 130 },
+        ],
+      },
+      {
+        total: 390,
+        metodoPago: "tarjeta",
+        montoTarjeta: 390,
+        detalle: [
+          { producto: "cerveza", cantidad: 3, precio_actual: 130, subtotal: 390 },
+        ],
+      },
+      {
+        total: 180,
+        metodoPago: "efectivo",
+        montoEfectivo: 180,
+        abonado: {
+          montoDescuento: 80,
+          montoTotal: 180,
+          unidadesGratis: 0,
+        },
+        detalle: [
+          { producto: "cerveza", cantidad: 2, precio_actual: 90, subtotal: 180 },
+        ],
+      },
+      {
+        total: 90,
+        metodoPago: "puntos",
+        montoPuntos: 90,
+        puntosUsados: 900,
+        abonado: {
+          montoDescuento: 40,
+          montoTotal: 90,
+          unidadesGratis: 0,
+        },
+        detalle: [
+          { producto: "cerveza", cantidad: 1, precio_actual: 90, subtotal: 90 },
+        ],
+      },
+    ]);
+
+    const cerveza = byProduct.get("cerveza");
+    expect(cerveza).toMatchObject({
+      cantidadRegular: 4,
+      cantidadAbonado: 3,
+      ventasRegular: 520,
+      ventasAbonado: 270,
+      puntosCanjeados: 90,
+      ventasTotales: 790,
+    });
+
+    const totales = buildReporteProductoTotales([cerveza!]);
+    expect(totales.ventasTotales).toBe(790);
+    expect(totales.puntosCanjeados).toBe(90);
+    expect(totales.dineroReal).toBe(700);
   });
 });
 
@@ -417,9 +606,52 @@ describe("assertNoCorteCerradoForVenta", () => {
     );
   });
 
+  it("usa código CORTE_ALREADY_CLOSED (409)", () => {
+    try {
+      assertNoCorteCerradoForVenta({ id: "corte-1" });
+      fail("expected ApiError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError);
+      const apiError = error as ApiError;
+      expect(apiError.statusCode).toBe(409);
+      expect(apiError.code).toBe("CORTE_ALREADY_CLOSED");
+    }
+  });
+
   it("permite venta si no hay corte cerrado hoy", () => {
     expect(() => assertNoCorteCerradoForVenta(null)).not.toThrow();
     expect(() => assertNoCorteCerradoForVenta(undefined)).not.toThrow();
+  });
+});
+
+describe("buildCorteWritePayload", () => {
+  it("persiste cajaId y cajaNombre al cerrar corte", () => {
+    const payload = buildCorteWritePayload(
+      {
+        concesionId: "c1",
+        sucursalId: "s1",
+        idUser: "user-1",
+        ventaId: null,
+        cajaId: "caja-a",
+        cajaNombre: "Caja 1",
+      },
+      {
+        fecha: "2026-07-28",
+        estatus: "CERRADO",
+        totalReal: 100,
+        totalCaja: 80,
+        efectivoContado: 80,
+        diferenciaCaja: 0,
+        jornadaId: "2026-07-28__J1",
+        inventarioId: "inv-1",
+      },
+    );
+
+    expect(payload.cajaId).toBe("caja-a");
+    expect(payload.cajaNombre).toBe("Caja 1");
+    expect(payload.estatus).toBe("CERRADO");
+    expect(payload.fecha).toBe("2026-07-28");
+    expect(payload.idUser).toBe("user-1");
   });
 });
 

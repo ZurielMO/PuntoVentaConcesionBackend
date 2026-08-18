@@ -10,6 +10,7 @@ import {
   replaceConcessionSchema,
   assignConcessionPointsSchema,
   assignUserToConcessionSchema,
+  updateConcessionComisionSchema,
 } from "../middleware/validators/concession.validator";
 import { requireSuperAdmin } from "../utils/roles.middlewares";
 import { productImagesUpload } from "../middleware/upload.middleware";
@@ -48,6 +49,13 @@ router.put(
   requireSuperAdmin,
   validateBody(assignUserToConcessionSchema),
   c.assignUserToConcession,
+);
+
+router.patch(
+  "/:id/comision",
+  requireSuperAdmin,
+  validateBody(updateConcessionComisionSchema),
+  c.updateConcessionComision,
 );
 
 router.post(

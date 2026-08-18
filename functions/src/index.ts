@@ -14,12 +14,23 @@ import "./config/env.bootstrap";
 import { onRequest } from "firebase-functions/v2/https";
 import app from "./app";
 
-// Exportar la API de Express como una Cloud Function HTTPS.
-// Agrega aquí los secrets requeridos (secrets: [...]) cuando los necesites.
-export const api = onRequest(
+/**
+ * Cloud Function HTTPS Gen2.
+ *
+ * Nombre `apiV2` (no `api`) porque en producción ya existe `api` en Gen1
+ * y Firebase no permite upgrade in-place Gen1 → Gen2 con el mismo nombre.
+ *
+ * URL: https://us-central1-puntoventacl.cloudfunctions.net/apiV2
+ * Cuando el tráfico esté en Gen2, borrar la Gen1:
+ *   firebase functions:delete api --region us-central1
+ *
+ * Agrega aquí secrets: [...] cuando los necesites.
+ */
+export const apiV2 = onRequest(
   {
     memory: "1GiB",
     invoker: "public",
+    secrets: ["SERVICE_ACCOUNT_APP_OFICIAL2"],
   },
   (req, res) => {
     app(req, res);

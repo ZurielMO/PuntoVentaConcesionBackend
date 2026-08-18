@@ -27,3 +27,12 @@ export const listTrabajadoresClub = asyncHandler(
     res.status(200).json({ success: true, data, count: data.length });
   },
 );
+
+export const listCortesiasTrabajador = asyncHandler(
+  async (req: Request, res: Response) => {
+    const data = await trabajadorClubService.listCortesiasTrabajador(
+      req.params.uid,
+    );
+    res.status(200).json({ success: true, data, count: data.length });
+  },
+);

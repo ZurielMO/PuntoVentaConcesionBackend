@@ -75,12 +75,49 @@ const assertSucursalBelongsToConcession = async (
   }
 };
 
-const validateUserBusinessRules = async (data: {
-  rol: string;
-  concesionId?: string | null;
-  sucursalId?: string | null;
-  cajaId?: string | null;
-}) => {
+/** Una caja solo puede tener un vendedor asignado. */
+const assertCajaLibre = async (
+  cajaId: string,
+  excludeUserId?: string | null,
+) => {
+  const snap = await usuariosCol()
+    .where("from_concesion", "==", true)
+    .where("cajaId", "==", cajaId)
+    .get();
+  const ocupada = snap.docs.find((doc) => {
+    const data = doc.data() ?? {};
+    if (data.activo === false) return false;
+    const rol = normalizeInternalRole(data.rol as string);
+    if (rol !== UserRole.VENDEDOR) return false;
+    if (
+      excludeUserId &&
+      (doc.id === excludeUserId || data.uid === excludeUserId)
+    ) {
+      return false;
+    }
+    return true;
+  });
+  if (ocupada) {
+    const nombre =
+      (ocupada.data()?.nombre as string | undefined) ?? "otro vendedor";
+    throw new ApiError(
+      400,
+      `Esta caja ya está asignada a ${nombre}. Solo 1 vendedor por caja.`,
+      true,
+      "CAJA_OCCUPIED",
+    );
+  }
+};
+
+const validateUserBusinessRules = async (
+  data: {
+    rol: string;
+    concesionId?: string | null;
+    sucursalId?: string | null;
+    cajaId?: string | null;
+  },
+  options?: { excludeUserId?: string | null },
+) => {
   const rol = normalizeInternalRole(data.rol);
 
   if (rol === UserRole.SUPERADMIN) {
@@ -115,6 +152,7 @@ const validateUserBusinessRules = async (data: {
     await assertSucursalBelongsToConcession(data.sucursalId, data.concesionId);
     if (data.cajaId) {
       await assertCajaBelongsToSucursal(data.sucursalId, data.cajaId);
+      await assertCajaLibre(data.cajaId, options?.excludeUserId);
     }
   }
 };
@@ -164,7 +202,7 @@ export const getUserById = async (id: string) => {
 
 export const createUser = async (data: {
   nombre: string;
-  fecha_nacimiento: string;
+  fecha_nacimiento?: string;
   email: string;
   password: string;
   rol: string;
@@ -210,9 +248,6 @@ export const createUser = async (data: {
     provider: "email",
     nombre: data.nombre,
     email,
-    fechaNacimiento: data.fecha_nacimiento,
-    fecha_nacimiento: data.fecha_nacimiento,
-    edad: calcularEdad(data.fecha_nacimiento),
     genero: "",
     rol: concesionRole,
     activo: data.activo ?? true,
@@ -224,6 +259,16 @@ export const createUser = async (data: {
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
+
+  if (data.fecha_nacimiento) {
+    docData.fechaNacimiento = data.fecha_nacimiento;
+    docData.fecha_nacimiento = data.fecha_nacimiento;
+    docData.edad = calcularEdad(data.fecha_nacimiento);
+  } else {
+    docData.fechaNacimiento = null;
+    docData.fecha_nacimiento = null;
+    docData.edad = null;
+  }
 
   if (internalRole === UserRole.VENDEDOR && data.sucursalId) {
     docData.sucursalId = data.sucursalId;
@@ -301,18 +346,25 @@ export const updateUser = async (
     );
   }
 
+  const effectiveSucursalId =
+    mergedRol === UserRole.VENDEDOR ? mergedSucursalId : null;
+  const effectiveCajaId =
+    mergedRol === UserRole.VENDEDOR ? mergedCajaId : null;
+
   await validateUserBusinessRules({
     rol: mergedRol,
     concesionId: mergedConcesionId,
-    sucursalId: mergedSucursalId,
-    cajaId: mergedCajaId,
-  });
+    sucursalId: effectiveSucursalId,
+    cajaId: effectiveCajaId,
+  }, { excludeUserId: id });
 
   const uid = (existing.uid as string) || id;
+  const nextPassword =
+    typeof data.password === "string" ? data.password.trim() : "";
 
   const authUpdate: Record<string, unknown> = {};
   if (data.email) authUpdate.email = data.email.toLowerCase().trim();
-  if (data.password) authUpdate.password = data.password;
+  if (nextPassword) authUpdate.password = nextPassword;
   if (data.nombre) authUpdate.displayName = data.nombre;
   if (data.activo !== undefined) authUpdate.disabled = data.activo === false;
   if (Object.keys(authUpdate).length > 0) {
@@ -326,6 +378,22 @@ export const updateUser = async (
           "Ya existe un usuario con ese email",
           true,
           "EMAIL_ALREADY_EXISTS",
+        );
+      }
+      if (code === "auth/weak-password" || code === "auth/invalid-password") {
+        throw new ApiError(
+          400,
+          "La contraseña no es válida (mínimo 6 caracteres)",
+          true,
+          "WEAK_PASSWORD",
+        );
+      }
+      if (code === "auth/user-not-found") {
+        throw new ApiError(
+          404,
+          "Usuario no encontrado en autenticación",
+          true,
+          "AUTH_USER_NOT_FOUND",
         );
       }
       throw error;
@@ -346,8 +414,22 @@ export const updateUser = async (
   if (data.concesionId !== undefined) {
     firestoreData.concesionId = data.concesionId;
   }
-  if (data.sucursalId !== undefined) firestoreData.sucursalId = data.sucursalId;
-  if (data.cajaId !== undefined) firestoreData.cajaId = data.cajaId;
+  // Siempre persistir asignación efectiva: vendedor puede cambiar caja;
+  // admin/otros limpian sucursal/caja.
+  if (
+    data.sucursalId !== undefined ||
+    data.rol !== undefined ||
+    mergedRol !== UserRole.VENDEDOR
+  ) {
+    firestoreData.sucursalId = effectiveSucursalId;
+  }
+  if (
+    data.cajaId !== undefined ||
+    data.rol !== undefined ||
+    mergedRol !== UserRole.VENDEDOR
+  ) {
+    firestoreData.cajaId = effectiveCajaId;
+  }
   if (data.rol !== undefined) {
     const concesionRole = toConcesionRole(data.rol);
     firestoreData.rol = concesionRole;
@@ -401,7 +483,7 @@ export const assignVendedorToSucursalCaja = async (
     concesionId: adminConcesionId,
     sucursalId: data.sucursalId,
     cajaId: data.cajaId,
-  });
+  }, { excludeUserId: userId });
 
   await ref.update({
     sucursalId: data.sucursalId,

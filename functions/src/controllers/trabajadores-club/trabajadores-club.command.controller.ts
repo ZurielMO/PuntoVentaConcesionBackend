@@ -22,6 +22,7 @@ export const updateCortesiaCanjeada = asyncHandler(
     const { cortesiaCanjeada } = req.body as { cortesiaCanjeada: boolean };
     const data = await trabajadorClubService.updateCortesiaCanjeada(
       req.params.uid,
+      req.params.cortesiaId,
       cortesiaCanjeada,
     );
     res.status(200).json({

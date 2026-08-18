@@ -8,7 +8,10 @@ import {
   requireInventarioReadAccess,
   requireInventarioWriteAccess,
 } from "../utils/roles.middlewares";
-import { upsertInventarioProductoSchema } from "../middleware/validators/inventario.validator";
+import {
+  ajustarInventarioProductoSchema,
+  upsertInventarioProductoSchema,
+} from "../middleware/validators/inventario.validator";
 
 const router = Router();
 
@@ -46,6 +49,12 @@ router.put(
   requireInventarioWriteAccess,
   validateBody(upsertInventarioProductoSchema),
   c.upsertInventarioProducto,
+);
+router.post(
+  "/:id/productos/:productoId/ajustes",
+  requireInventarioWriteAccess,
+  validateBody(ajustarInventarioProductoSchema),
+  c.ajustarInventarioProducto,
 );
 router.delete(
   "/:id/productos/:productoId",

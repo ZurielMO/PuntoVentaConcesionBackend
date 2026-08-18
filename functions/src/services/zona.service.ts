@@ -10,14 +10,18 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   ...doc.data(),
 });
 
-export const listZonas = async () => {
-  const snap = await col().where("activo", "==", true).get();
+export const listZonas = async (includeInactive = false) => {
+  let query: FirebaseFirestore.Query = col();
+  if (!includeInactive) {
+    query = query.where("activo", "==", true);
+  }
+  const snap = await query.get();
   return snap.docs.map(toData);
 };
 
 export const getZonaById = async (id: string) => {
   const doc = await col().doc(id).get();
-  if (!doc.exists || doc.data()?.activo === false) {
+  if (!doc.exists) {
     throw new ApiError(404, "Zona no encontrada", true, "NOT_FOUND");
   }
   return toData(doc);
