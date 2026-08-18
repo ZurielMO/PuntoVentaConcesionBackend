@@ -6,6 +6,7 @@ import {
   getSucursalConcessionId,
   getUserConcessionId,
   getUserSucursalId,
+  isAdminCerveceria,
   isSuperAdmin,
   isVendedor,
 } from "../../utils/roles.middlewares";
@@ -33,7 +34,7 @@ const resolveSucursalId = async (req: Request): Promise<string> => {
     return querySucursalId;
   }
 
-  if (isVendedor(user)) {
+  if (isVendedor(user) || isAdminCerveceria(user)) {
     const sucursalId = getUserSucursalId(user);
     if (!sucursalId) {
       throw new ApiError(403, "Usuario sin sucursal asignada", true, "FORBIDDEN");

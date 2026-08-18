@@ -29,6 +29,7 @@ export const replaceConcessionSchema = z
     // Enviar [] limpia el logo a propósito.
     imagenes: z.array(z.string().url()).optional(),
     porcentajeComision: porcentajeComisionField,
+    // Omitido = conservar tipo existente.
     tipo: concessionTipoSchema.optional(),
   })
   .strict();

@@ -11,6 +11,7 @@ import {
   isSuperAdmin,
   isVendedor,
   isAdmin,
+  isAdminCerveceria,
 } from "./roles.middlewares";
 
 export type OperationalListFilters = {
@@ -50,6 +51,15 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
         queryCajaId?.trim() ||
         (user.cajaId as string | undefined) ||
         undefined,
+      inventarioId: req.query.inventarioId as string | undefined,
+    };
+  }
+
+  if (isAdminCerveceria(user)) {
+    return {
+      concesionId,
+      sucursalId: getUserSucursalId(user),
+      cajaId: req.query.cajaId as string | undefined,
       inventarioId: req.query.inventarioId as string | undefined,
     };
   }

@@ -5,6 +5,7 @@
 
 import { Request, Response, NextFunction } from "express";
 import { AppOficial2Error } from "../config/firebase.appoficial2";
+import { normalizeMultipartParseError } from "../middleware/upload.middleware";
 import { ApiError } from "./api-error";
 import { buildPublicErrorBody, logSafeError } from "./public-error.util";
 
@@ -32,6 +33,8 @@ export const errorHandler = (
       "JORNADA_SERVICE_UNAVAILABLE",
     );
   }
+
+  err = normalizeMultipartParseError(err) as Error | ApiError;
 
   logSafeError("errorHandler", err, req.requestId);
 

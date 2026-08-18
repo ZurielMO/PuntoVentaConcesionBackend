@@ -4,6 +4,8 @@ import {
   aggregateProductoReporteFromVentas,
   aggregateTotalsByMetodoPago,
   buildReporteProductoTotales,
+  listCortes,
+  type ProductoReporteAgg,
   type ReporteProductoTotalesRow,
 } from "./corte.service";
 import * as concessionService from "./concession.service";
@@ -135,6 +137,159 @@ const filterVentasJornada = (
     const invId = v.inventarioId as string | undefined;
     return invId ? inventarioIds.has(invId) : false;
   });
+
+const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
+  cantidadRegular: 0,
+  cantidadAbonado: 0,
+  ventasRegular: 0,
+  ventasAbonado: 0,
+  cortesias: 0,
+  puntosCanjeados: 0,
+  ventasTotales: 0,
+});
+
+const isCorteCerrado = (corte: Record<string, unknown>) =>
+  String(corte.estatus ?? "").toUpperCase() === "CERRADO";
+
+const hasCorteProductosOTotal = (corte: Record<string, unknown>) => {
+  const total =
+    corte.totalEfectivo != null
+      ? Number(corte.totalEfectivo)
+      : Number(corte.totalReal ?? 0);
+  const productos = Array.isArray(corte.productos) ? corte.productos : [];
+  return total > 0 || productos.length > 0;
+};
+
+/**
+ * Cortes a fusionar en el reporte:
+ * - tipoCorte === "CONTEO" (camino normal), o
+ * - sin ventas POS y corte cerrado con totales/productos (fallback si falta tipoCorte).
+ * No usa cortes POS cuando ya hay tickets, para evitar doble conteo.
+ */
+const selectCortesConteoParaReporte = (
+  cortes: Array<Record<string, unknown>>,
+  hasPosVentas: boolean,
+): Array<Record<string, unknown>> =>
+  cortes.filter((c) => {
+    if (!isCorteCerrado(c)) return false;
+    if (c.tipoCorte === "CONTEO") return true;
+    if (
+      !hasPosVentas &&
+      (c.tipoCorte == null || c.tipoCorte === "") &&
+      hasCorteProductosOTotal(c)
+    ) {
+      return true;
+    }
+    return false;
+  });
+
+const loadCortesJornada = async (
+  concesionId: string,
+  jornadaId: string,
+  sucursalId?: string,
+) => {
+  const cortes = await listCortes({ concesionId, sucursalId, jornadaId });
+  return cortes as Array<Record<string, unknown>>;
+};
+
+const totalEfectivoFromCortesConteo = (
+  cortes: Array<Record<string, unknown>>,
+) =>
+  roundMoney(
+    cortes.reduce((sum, c) => {
+      const efectivo =
+        c.totalEfectivo != null
+          ? Number(c.totalEfectivo)
+          : Number(c.totalReal ?? 0);
+      return sum + efectivo;
+    }, 0),
+  );
+
+/** Ventas derivadas de cortes por conteo (sin tickets POS). */
+const aggregateProductoReporteFromCortesConteo = (
+  cortes: Array<Record<string, unknown>>,
+): Map<string, ProductoReporteAgg> => {
+  const byProduct = new Map<string, ProductoReporteAgg>();
+
+  for (const corte of cortes) {
+    const productos = Array.isArray(corte.productos)
+      ? (corte.productos as Array<Record<string, unknown>>)
+      : [];
+
+    for (const linea of productos) {
+      const productoId = String(linea.productoId ?? "");
+      if (!productoId) continue;
+
+      const cantidad = Number(linea.cantidad ?? 0);
+      const subtotal = Number(linea.subtotal ?? 0);
+      const prev = byProduct.get(productoId) ?? emptyProductoReporteAgg();
+
+      prev.cantidadRegular += cantidad;
+      prev.ventasRegular = roundMoney(prev.ventasRegular + subtotal);
+      prev.ventasTotales = roundMoney(prev.ventasTotales + subtotal);
+      byProduct.set(productoId, prev);
+    }
+  }
+
+  return byProduct;
+};
+
+const mergeProductoReporteMaps = (
+  base: Map<string, ProductoReporteAgg>,
+  extra: Map<string, ProductoReporteAgg>,
+): Map<string, ProductoReporteAgg> => {
+  const merged = new Map(base);
+
+  for (const [productoId, row] of extra) {
+    const prev = merged.get(productoId);
+    if (!prev) {
+      merged.set(productoId, { ...row });
+      continue;
+    }
+    merged.set(productoId, {
+      cantidadRegular: prev.cantidadRegular + row.cantidadRegular,
+      cantidadAbonado: prev.cantidadAbonado + row.cantidadAbonado,
+      ventasRegular: roundMoney(prev.ventasRegular + row.ventasRegular),
+      ventasAbonado: roundMoney(prev.ventasAbonado + row.ventasAbonado),
+      cortesias: prev.cortesias + row.cortesias,
+      puntosCanjeados: roundMoney(prev.puntosCanjeados + row.puntosCanjeados),
+      ventasTotales: roundMoney(prev.ventasTotales + row.ventasTotales),
+    });
+  }
+
+  return merged;
+};
+
+const applyConteoToResumen = (
+  resumen: ReporteConcesionRow,
+  totalConteo: number,
+  porcentajeComision: number,
+): ReporteConcesionRow => {
+  if (totalConteo <= 0) return resumen;
+  const totalVenta = roundMoney(resumen.totalVenta + totalConteo);
+  const comision = roundMoney((totalVenta * porcentajeComision) / 100);
+  return {
+    ...resumen,
+    totalVenta,
+    comision,
+    gananciaConcesion: roundMoney(totalVenta - comision),
+  };
+};
+
+const applyConteoToIngresos = (
+  ingresos: ReporteIngresos,
+  totalConteo: number,
+  cantidadCortes: number,
+): ReporteIngresos => {
+  if (totalConteo <= 0 && cantidadCortes <= 0) return ingresos;
+  const totalEfectivo = roundMoney(ingresos.totalEfectivo + totalConteo);
+  return {
+    ...ingresos,
+    totalEfectivo,
+    ventaNeta: roundMoney(totalEfectivo + ingresos.totalTarjeta),
+    cantidadVentas: ingresos.cantidadVentas + cantidadCortes,
+  };
+};
 
 const buildProductosReporte = async (
   concesionId: string,
@@ -277,8 +432,28 @@ const buildReporteForConcesion = async (
     ventasFiltradas as Array<Record<string, unknown> & { id: string }>,
   );
 
-  const resumen = buildResumenConcesion(concesion, ventas);
-  const ingresos = buildIngresosFromVentas(ventas);
+  const cortesJornada = await loadCortesJornada(
+    concesion.id,
+    jornada.jornadaId,
+    sucursalId,
+  );
+  const cortesConteo = selectCortesConteoParaReporte(
+    cortesJornada,
+    ventas.length > 0,
+  );
+  const totalConteo = totalEfectivoFromCortesConteo(cortesConteo);
+  const porcentajeComision = Number(concesion.porcentajeComision ?? 0);
+
+  const resumen = applyConteoToResumen(
+    buildResumenConcesion(concesion, ventas),
+    totalConteo,
+    porcentajeComision,
+  );
+  const ingresos = applyConteoToIngresos(
+    buildIngresosFromVentas(ventas),
+    totalConteo,
+    cortesConteo.length,
+  );
 
   if (!includeDetalle) {
     return {
@@ -290,7 +465,10 @@ const buildReporteForConcesion = async (
   }
 
   const stockByProduct = await aggregateStockByProduct(inventarios);
-  const ventasByProduct = aggregateProductoReporteFromVentas(ventas);
+  const ventasByProduct = mergeProductoReporteMaps(
+    aggregateProductoReporteFromVentas(ventas),
+    aggregateProductoReporteFromCortesConteo(cortesConteo),
+  );
   const productos = await buildProductosReporte(
     concesion.id,
     stockByProduct,

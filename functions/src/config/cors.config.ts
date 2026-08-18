@@ -2,6 +2,7 @@ const DEFAULT_CORS_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
   "https://foodmarket.clubleon.mx",
+  "https://concesiones.clubleon.mx",
 ] as const;
 
 function parseOrigins(raw: string | undefined): string[] {
@@ -11,21 +12,19 @@ function parseOrigins(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
-function readConfiguredOrigins(): string[] {
-  return [
-    ...new Set([
-      ...DEFAULT_CORS_ORIGINS,
-      ...parseOrigins(process.env.CORS_ALLOWED_ORIGINS),
-    ]),
-  ];
-}
-
+/**
+ * Une defaults + env + store. El env NO reemplaza los defaults: en Cloud Run
+ * a menudo queda un CORS_ALLOWED_ORIGINS viejo (solo localhost) que, si
+ * reemplazara, bloquearía el front de producción.
+ */
 export function getAllowedCorsOriginsWithStore(): string[] {
+  const fromEnv = parseOrigins(process.env.CORS_ALLOWED_ORIGINS);
   const storeOrigin = process.env.STORE_PUBLIC_BASE_URL?.trim();
 
   return [
     ...new Set([
-      ...readConfiguredOrigins(),
+      ...DEFAULT_CORS_ORIGINS,
+      ...fromEnv,
       ...(storeOrigin ? [storeOrigin] : []),
     ]),
   ];

@@ -32,6 +32,26 @@ export const cerrarCorteSchema = z
   })
   .strict();
 
+export const cerrarCortePorConteoSchema = z
+  .object({
+    productos: z
+      .array(
+        z
+          .object({
+            productoId: z.string().min(1),
+            cantidadFinal: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .min(1, "Debes enviar el conteo de al menos un producto"),
+    comentarios: z.string().max(1000).optional(),
+    efectivoContado: z.number().nonnegative().optional(),
+  })
+  .strict();
+
 export type CreateCorteInput = z.infer<typeof createCorteSchema>;
 export type UpdateCorteInput = z.infer<typeof updateCorteSchema>;
 export type CerrarCorteInput = z.infer<typeof cerrarCorteSchema>;
+export type CerrarCortePorConteoInput = z.infer<
+  typeof cerrarCortePorConteoSchema
+>;

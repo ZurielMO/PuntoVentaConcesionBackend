@@ -6,6 +6,7 @@ import { getOperationalListFiltersAsync } from "../../utils/list-filters.util";
 import {
   getUserConcessionId,
   getUserSucursalId,
+  isSuperAdmin,
 } from "../../utils/roles.middlewares";
 
 export const createCorte = asyncHandler(async (req: Request, res: Response) => {
@@ -60,3 +61,40 @@ export const cerrarCorte = asyncHandler(async (req: Request, res: Response) => {
   );
   res.status(201).json({ success: true, data, message: "Corte cerrado" });
 });
+
+export const cerrarCortePorConteo = asyncHandler(
+  async (req: Request, res: Response) => {
+    const user = req.user;
+    if (!user?.uid) {
+      throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
+    }
+
+    const concesionId =
+      getUserConcessionId(user) ??
+      (isSuperAdmin(user)
+        ? (req.query.concesionId as string | undefined)
+        : undefined);
+    if (!concesionId) {
+      throw new ApiError(403, "Usuario sin concesión asignada", true, "FORBIDDEN");
+    }
+
+    // Admin cervecería/vendedor usan su sucursal; superadmin puede indicarla.
+    const sucursalId =
+      getUserSucursalId(user) ?? (req.query.sucursalId as string | undefined);
+    if (!sucursalId) {
+      throw new ApiError(400, "Se requiere sucursalId", true, "MISSING_SUCURSAL");
+    }
+
+    const data = await corteService.cerrarCortePorConteo(
+      {
+        concesionId,
+        sucursalId,
+        idUser: user.uid,
+      },
+      req.body,
+    );
+    res
+      .status(201)
+      .json({ success: true, data, message: "Corte cerrado por conteo" });
+  },
+);

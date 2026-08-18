@@ -12,7 +12,15 @@ import "./config/env.bootstrap";
  */
 
 import { onRequest } from "firebase-functions/v2/https";
+import { defineSecret } from "firebase-functions/params";
 import app from "./app";
+
+/**
+ * JSON del service account de acreditaciones-b904f (Realtime DB jornada_activa).
+ * Crear/actualizar:
+ *   npx firebase-tools functions:secrets:set SERVICE_ACCOUNT_APP_OFICIAL2 --project puntoventacl --data-file=./acreditaciones-....json
+ */
+const serviceAccountAppOficial2 = defineSecret("SERVICE_ACCOUNT_APP_OFICIAL2");
 
 /**
  * Cloud Function HTTPS Gen2.
@@ -23,14 +31,12 @@ import app from "./app";
  * URL: https://us-central1-puntoventacl.cloudfunctions.net/apiV2
  * Cuando el tráfico esté en Gen2, borrar la Gen1:
  *   firebase functions:delete api --region us-central1
- *
- * Agrega aquí secrets: [...] cuando los necesites.
  */
 export const apiV2 = onRequest(
   {
     memory: "1GiB",
     invoker: "public",
-    secrets: ["SERVICE_ACCOUNT_APP_OFICIAL2"],
+    secrets: [serviceAccountAppOficial2],
   },
   (req, res) => {
     app(req, res);

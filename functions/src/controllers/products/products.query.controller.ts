@@ -2,10 +2,10 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
 import * as productService from "../../services/product.service";
 import { UserRole } from "../../models";
-import { isAdmin, isSuperAdmin } from "../../utils/roles.middlewares";
+import { isAdmin, isAdminCerveceria, isSuperAdmin } from "../../utils/roles.middlewares";
 
 const canIncludeInactive = (req: Request): boolean =>
-  (isSuperAdmin(req.user) || isAdmin(req.user)) &&
+  (isSuperAdmin(req.user) || isAdmin(req.user) || isAdminCerveceria(req.user)) &&
   String(req.query.includeInactive).toLowerCase() === "true";
 
 export const getProductsByConcession = asyncHandler(

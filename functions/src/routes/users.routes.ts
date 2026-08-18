@@ -39,6 +39,7 @@ router.put(
   validateBody(updateUserSchema),
   c.updateUser,
 );
+router.delete("/:id/hard", requireSuperAdmin, c.hardDeleteUser);
 router.delete("/:id", requireSuperAdmin, c.deleteUser);
 
 export default router;

@@ -2,19 +2,23 @@ import { z } from "zod";
 
 const assignableRolSchema = z.enum([
   "ADMIN",
+  "ADMIN_CERVECERIA",
   "VENDEDOR",
   "EMPLEADO",
   "CONCESION_ADMIN",
+  "CONCESION_ADMIN_CERVECERIA",
   "CONCESION_VENDEDOR",
 ]);
 
 export const userRolEnum = z.enum([
   "SUPERADMIN",
   "ADMIN",
+  "ADMIN_CERVECERIA",
   "VENDEDOR",
   "EMPLEADO",
   "CONCESION_SUPERADMIN",
   "CONCESION_ADMIN",
+  "CONCESION_ADMIN_CERVECERIA",
   "CONCESION_VENDEDOR",
 ]);
 
@@ -38,11 +42,18 @@ export const createUserSchema = z
           ? "VENDEDOR"
           : data.rol === "CONCESION_ADMIN"
             ? "ADMIN"
-            : data.rol;
-      if (rol === "VENDEDOR" && !data.sucursalId) return false;
+            : data.rol === "CONCESION_ADMIN_CERVECERIA"
+              ? "ADMIN_CERVECERIA"
+              : data.rol;
+      if ((rol === "VENDEDOR" || rol === "ADMIN_CERVECERIA") && !data.sucursalId) {
+        return false;
+      }
       return true;
     },
-    { message: "Los VENDEDORES requieren sucursalId", path: ["sucursalId"] },
+    {
+      message: "Los VENDEDORES y ADMIN_CERVECERIA requieren sucursalId",
+      path: ["sucursalId"],
+    },
   );
 
 export const updateUserSchema = z
