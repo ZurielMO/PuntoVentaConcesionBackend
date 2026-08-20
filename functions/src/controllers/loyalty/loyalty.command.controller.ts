@@ -1,8 +1,10 @@
 import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
+import * as cinepolisPuntosService from "../../services/cinepolis-puntos.service";
 import * as loyaltyPointsService from "../../services/loyalty-points.service";
 import * as abonadoService from "../../services/abonado.service";
 import * as detalleVentaService from "../../services/detalle-venta.service";
+import { ApiError } from "../../utils/api-error";
 
 export const assignVentaPoints = asyncHandler(
   async (req: Request, res: Response) => {
@@ -65,6 +67,34 @@ export const consumeAbonadoBenefit = asyncHandler(
       success: true,
       data: result,
       message: "Beneficio consumido correctamente",
+    });
+  },
+);
+
+export const assignCinepolisPoints = asyncHandler(
+  async (req: Request, res: Response) => {
+    const user = req.user;
+    if (!user?.uid || !user.email) {
+      throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
+    }
+    const { memberId, dinero, comentario } = req.body as {
+      memberId: string;
+      dinero: number;
+      comentario?: string;
+    };
+
+    const result = await cinepolisPuntosService.assignCinepolisPoints({
+      memberId,
+      dinero,
+      comentario,
+      cashierUid: user.uid,
+      cashierEmail: user.email,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: result,
+      message: "Puntos asignados correctamente",
     });
   },
 );

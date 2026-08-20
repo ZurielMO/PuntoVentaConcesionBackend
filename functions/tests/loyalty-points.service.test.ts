@@ -337,6 +337,7 @@ describe("loyalty-points.service", () => {
       "https://example.test/api/usuarios/uid-2/puntos/asignar-por-venta",
     );
     expect(body).toEqual({
+      folioVenta: "V-123",
       dinero: 320,
       descripcion: "Venta POS V-123",
     });

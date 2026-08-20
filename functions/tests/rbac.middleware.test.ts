@@ -8,6 +8,7 @@ import { firestorePos } from "../src/config/firebase";
 import {
   requireSuperAdmin,
   requireAdminOrSuperAdmin,
+  requireCinepolisCashier,
   requireInventarioWriteAccess,
   requireInventarioReadAccess,
 } from "../src/utils/roles.middlewares";
@@ -57,6 +58,37 @@ describe("RBAC middleware", () => {
   it("requireAdminOrSuperAdmin permite ADMIN", () => {
     requireAdminOrSuperAdmin({ user: adminUser } as any, mockRes(), mockNext);
     expect(mockNext).toHaveBeenCalled();
+  });
+
+  it("requireCinepolisCashier permite el email Cinépolis", () => {
+    requireCinepolisCashier(
+      {
+        user: {
+          uid: "cine-1",
+          email: "cinepoliscl@clubleon.mx",
+          activo: true,
+        },
+      } as any,
+      mockRes(),
+      mockNext,
+    );
+    expect(mockNext).toHaveBeenCalled();
+  });
+
+  it("requireCinepolisCashier rechaza otro email", () => {
+    expect(() =>
+      requireCinepolisCashier(
+        {
+          user: {
+            uid: "vend-1",
+            email: "cajero@clubleon.mx",
+            activo: true,
+          },
+        } as any,
+        mockRes(),
+        mockNext,
+      ),
+    ).toThrow(ApiError);
   });
 
   it("requireInventarioWriteAccess bloquea VENDEDOR", async () => {

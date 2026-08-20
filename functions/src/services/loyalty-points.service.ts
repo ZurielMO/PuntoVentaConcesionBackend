@@ -571,6 +571,8 @@ export const assignPointsBySale = async (params: {
   memberId: string;
   total: number;
   ventaId: string;
+  folioVenta?: string;
+  descripcion?: string;
 }): Promise<AssignPointsBySaleResult> => {
   const { memberId, total, ventaId } = params;
   const trimmedId = memberId.trim();
@@ -583,7 +585,8 @@ export const assignPointsBySale = async (params: {
   }
 
   const puntosAsignados = calcularPuntosPorVenta(total);
-  const descripcion = `Venta POS ${ventaId}`;
+  const descripcion = params.descripcion?.trim() || `Venta POS ${ventaId}`;
+  const folioVenta = (params.folioVenta ?? ventaId).trim();
 
   const url = buildBackendClApiUrl(
     `/api/usuarios/${encodeURIComponent(trimmedId)}/puntos/asignar-por-venta`,
@@ -593,7 +596,7 @@ export const assignPointsBySale = async (params: {
     const resp = await withBackendClAuthRetry((headers) =>
       axios.post(
         url,
-        { dinero: total, descripcion },
+        { folioVenta, dinero: total, descripcion },
         { headers, timeout: 15000 },
       ),
     );
