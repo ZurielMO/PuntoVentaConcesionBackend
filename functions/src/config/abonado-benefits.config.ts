@@ -1,86 +1,71 @@
 /**
- * Catálogo de beneficios POS para abonados (Fierabono).
- * HARDCODED: no viene de Firestore `beneficios` ni `descuentos` del POS.
- * La elegibilidad del abonado sí se lee de `usuariosApp.seasonPassVerification`.
+ * Beneficios POS para abonados (Fierabono).
+ * La oferta sale de Firestore `descuentos` (activos, por concesión y producto).
+ * La elegibilidad del abonado se lee de `usuariosApp.seasonPassVerification`.
  */
-export type AbonadoBenefitType = "buy_one_get_one" | "subscriber_price";
+
+export type AbonadoBenefitType = "2X1" | "3X2" | "PORCENTAJE" | "MONTO";
 
 export interface AbonadoBenefitDefinition {
   id: string;
   titulo: string;
   descripcion: string;
   tipo: AbonadoBenefitType;
-  /** El nombre del producto debe contener todos estos tokens (case-insensitive). */
-  productNameTokens: string[];
-  /** IDs de producto opcionales (env, separados por coma). */
-  productIds?: string[];
-  /** IDs de concesión POS (env, separados por coma). Opcional si hay concesionNombreTokens. */
-  concesionIds?: string[];
-  /** Tokens del nombre de concesión (p. ej. "ice", "cervecer" → Cervecería). */
-  concesionNombreTokens?: string[];
-  /** Precio fijo para abonados (tipo subscriber_price). */
-  subscriberPrice?: number;
-  /**
-   * true = un solo uso por abonado (persistido en posBeneficiosConsumidos).
-   * false = beneficio permanente / reutilizable en cada venta.
-   */
-  onceOnly: boolean;
+  productIds: string[];
+  concesionIds: string[];
+  valor?: number | null;
 }
 
-/** Beneficios de un solo uso (p. ej. ICE 2x1). */
-export const isOnceOnlyBenefit = (
-  benefit: AbonadoBenefitDefinition,
-): boolean => benefit.onceOnly === true;
+const DESCUENTO_TIPOS: AbonadoBenefitType[] = [
+  "2X1",
+  "3X2",
+  "PORCENTAJE",
+  "MONTO",
+];
 
-const normalizeConcesionNombre = (value?: string | null): string => {
-  if (!value) return "";
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "");
+const asStringList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
 };
 
-/** Indica si un beneficio aplica a la concesión del vendedor. */
-export const benefitAppliesToConcesion = (
-  benefit: AbonadoBenefitDefinition,
-  concesionId?: string | null,
-  concesionNombre?: string | null,
-): boolean => {
-  const trimmedId = concesionId?.trim();
-  const ids = benefit.concesionIds ?? [];
-  if (ids.length > 0 && trimmedId && ids.includes(trimmedId)) {
-    return true;
-  }
+export const isAbonadoBenefitType = (
+  value: string,
+): value is AbonadoBenefitType =>
+  DESCUENTO_TIPOS.includes(value as AbonadoBenefitType);
 
-  const tokens = benefit.concesionNombreTokens ?? [];
-  if (tokens.length === 0) {
-    return false;
-  }
+export const isQuantityPromo = (tipo: AbonadoBenefitType): boolean =>
+  tipo === "2X1" || tipo === "3X2";
 
-  const nombreNorm = normalizeConcesionNombre(concesionNombre);
-  if (!nombreNorm) {
-    return false;
-  }
+/** Mapea un documento de `descuentos` a beneficio de abonado. */
+export const mapDescuentoToBenefit = (
+  row: Record<string, unknown> & { id: string },
+): AbonadoBenefitDefinition | null => {
+  if (row.activo === false) return null;
 
-  return tokens.every((token) =>
-    nombreNorm.includes(normalizeConcesionNombre(token)),
-  );
+  const tipo = String(row.tipo ?? "").toUpperCase();
+  if (!isAbonadoBenefitType(tipo)) return null;
+
+  const productIds = asStringList(row.producto_ids);
+  if (productIds.length === 0) return null;
+
+  const concesionId = String(row.concesion_id ?? "").trim();
+  const valorRaw = row.valor;
+  const valor =
+    typeof valorRaw === "number" && Number.isFinite(valorRaw) ? valorRaw : null;
+
+  return {
+    id: row.id,
+    titulo: String(row.titulo ?? "Descuento").trim() || "Descuento",
+    descripcion: String(row.descripcion ?? "").trim(),
+    tipo,
+    productIds,
+    concesionIds: concesionId ? [concesionId] : [],
+    valor: tipo === "PORCENTAJE" || tipo === "MONTO" ? valor : null,
+  };
 };
-
-/** Disabled: POS QR only assigns Club León points. */
-export const ABONADO_BENEFITS_CATALOG: AbonadoBenefitDefinition[] = [];
-
-export const getBenefitDefinition = (
-  benefitId: string,
-): AbonadoBenefitDefinition | undefined =>
-  ABONADO_BENEFITS_CATALOG.find((benefit) => benefit.id === benefitId);
-
-export const filterBenefitsForConcesion = (
-  benefits: AbonadoBenefitDefinition[],
-  concesionId?: string | null,
-  concesionNombre?: string | null,
-): AbonadoBenefitDefinition[] =>
-  benefits.filter((benefit) =>
-    benefitAppliesToConcesion(benefit, concesionId, concesionNombre),
-  );

@@ -17,6 +17,7 @@ export const COLLECTIONS = {
   ASIGNACIONES_CAJAS_JORNADA: "asignaciones_cajas_jornada",
   COMBOS: "combos",
   DESCUENTOS: "descuentos",
+  ABONADO_BENEFICIOS_CONSUMIDOS: "abonado_beneficios_consumidos",
 } as const;
 
 // Subcolecciones.

@@ -4,14 +4,16 @@ import {
   USUARIOS_APP_COLLECTION,
 } from "../config/app.firebase";
 import {
-  ABONADO_BENEFITS_CATALOG,
   AbonadoBenefitDefinition,
-  filterBenefitsForConcesion,
-  getBenefitDefinition,
-  isOnceOnlyBenefit,
+  AbonadoBenefitType,
+  isQuantityPromo,
+  mapDescuentoToBenefit,
 } from "../config/abonado-benefits.config";
-import { getConcessionNombre } from "./concession.service";
-import { listDescuentos } from "./descuento.service";
+import { firestorePos } from "../config/firebase";
+import { COLLECTIONS } from "../config/firestore.constants";
+import { getDescuentoById, listDescuentos } from "./descuento.service";
+import { buildJornadaId } from "./asignacion-caja.service";
+import { resolveJornadaPrimaria } from "./jornada.service";
 import { ApiError } from "../utils/api-error";
 
 type SeasonPassVerification = {
@@ -29,15 +31,11 @@ export interface AbonadoBenefitStatus {
   id: string;
   titulo: string;
   descripcion: string;
-  tipo: AbonadoBenefitDefinition["tipo"];
-  productNameTokens: string[];
+  tipo: AbonadoBenefitType;
   productIds: string[];
   concesionIds: string[];
-  concesionNombreTokens: string[];
-  subscriberPrice?: number;
+  valor?: number | null;
   disponible: boolean;
-  consumidoAt?: string;
-  consumidoVentaId?: string;
 }
 
 export interface AbonadoVerificationResult {
@@ -92,105 +90,89 @@ const getUserDocumentByUid = async (uid: string) => {
   }
 };
 
-const serializeTimestamp = (value: unknown): string | undefined => {
-  if (
-    value &&
-    typeof value === "object" &&
-    "toDate" in value &&
-    typeof (value as { toDate: () => Date }).toDate === "function"
-  ) {
-    return (value as { toDate: () => Date }).toDate().toISOString();
-  }
-  if (typeof value === "string" && value.trim()) {
-    return value;
-  }
-  return undefined;
-};
-
-const loadActive2x1ProductIds = async (
+const loadActiveDescuentoBenefits = async (
   concesionId?: string | null,
-): Promise<string[]> => {
-  if (!concesionId?.trim()) return [];
+): Promise<AbonadoBenefitDefinition[]> => {
+  const trimmed = concesionId?.trim();
+  if (!trimmed) return [];
 
-  const descuentos = (await listDescuentos({
-    concesionId: concesionId.trim(),
-    includeInactive: true,
-  })) as Array<{
-    activo?: boolean;
-    tipo?: string;
-    producto_ids?: unknown;
-  }>;
+  const rows = (await listDescuentos({
+    concesionId: trimmed,
+    includeInactive: false,
+  })) as Array<Record<string, unknown> & { id: string }>;
 
-  return descuentos
+  return rows
+    .map(mapDescuentoToBenefit)
+    .filter((item): item is AbonadoBenefitDefinition => item != null)
     .filter(
       (item) =>
-        item.activo !== false &&
-        String(item.tipo ?? "").toUpperCase() === "2X1",
-    )
-    .flatMap((item) =>
-      Array.isArray(item.producto_ids)
-        ? item.producto_ids.map((id) => String(id).trim()).filter(Boolean)
-        : [],
+        item.concesionIds.length === 0 || item.concesionIds.includes(trimmed),
     );
 };
 
-const attachActive2x1ProductIds = (
-  definitions: AbonadoBenefitDefinition[],
-  productIds: string[],
-): AbonadoBenefitDefinition[] => {
-  if (productIds.length === 0) {
-    return definitions;
-  }
+const toBenefitStatus = (
+  definition: AbonadoBenefitDefinition,
+  disponible: boolean,
+): AbonadoBenefitStatus => ({
+  id: definition.id,
+  titulo: definition.titulo,
+  descripcion: definition.descripcion,
+  tipo: definition.tipo,
+  productIds: definition.productIds,
+  concesionIds: definition.concesionIds,
+  valor: definition.valor ?? null,
+  disponible,
+});
 
-  const withIce = definitions.some((item) => item.id === "ice-2x1")
-    ? definitions
-    : [
-        ...definitions,
-        ...ABONADO_BENEFITS_CATALOG.filter((item) => item.id === "ice-2x1"),
-      ];
+const consumosCol = () =>
+  firestorePos.collection(COLLECTIONS.ABONADO_BENEFICIOS_CONSUMIDOS);
 
-  return withIce.map((definition) => {
-    if (definition.tipo !== "buy_one_get_one") {
-      return definition;
-    }
-    return {
-      ...definition,
-      productIds: [...new Set([...(definition.productIds ?? []), ...productIds])],
-    };
-  });
+const buildConsumoId = (
+  jornadaId: string,
+  memberId: string,
+  benefitId: string,
+) => `${jornadaId}__${memberId}__${benefitId}`;
+
+const resolveJornadaIdActiva = async (): Promise<string> => {
+  const { jornadaNumero, fecha } = await resolveJornadaPrimaria();
+  return buildJornadaId(fecha, jornadaNumero);
 };
 
-const buildBenefitStatuses = (
-  verification: SeasonPassVerification | undefined,
+/**
+ * Beneficios de un solo uso que este abonado ya gastó en la jornada activa.
+ *
+ * Solo 2x1/3x2 se agotan: uno por promoción, por abonado, por jornada. Los de
+ * monto o porcentaje (p. ej. cerveza) se pueden usar cuantas veces quiera.
+ * Si no hay jornada activa no se bloquea el escaneo.
+ */
+const loadBeneficiosConsumidos = async (
+  memberId: string,
   definitions: AbonadoBenefitDefinition[],
-  options?: { keepOnceOnlyAvailable?: boolean },
-): AbonadoBenefitStatus[] => {
-  const consumed = verification?.posBeneficiosConsumidos ?? {};
+): Promise<Set<string>> => {
+  const limitados = definitions.filter((item) => isQuantityPromo(item.tipo));
+  if (limitados.length === 0) return new Set();
 
-  return definitions.map((definition) => {
-    const usage = consumed[definition.id];
-    const consumidoAt = serializeTimestamp(usage?.consumedAt);
+  let jornadaId: string;
+  try {
+    jornadaId = await resolveJornadaIdActiva();
+  } catch (error) {
+    console.error("No se pudo resolver la jornada para beneficios", error);
+    return new Set();
+  }
 
-    return {
-      id: definition.id,
-      titulo: definition.titulo,
-      descripcion: definition.descripcion,
-      tipo: definition.tipo,
-      productNameTokens: definition.productNameTokens,
-      productIds: definition.productIds ?? [],
-      concesionIds: definition.concesionIds ?? [],
-      concesionNombreTokens: definition.concesionNombreTokens ?? [],
-      subscriberPrice: definition.subscriberPrice,
-      // onceOnly (ICE 2x1): unavailable after first consume.
-      // Permanent benefits (cerveza abonado): always disponible.
-      disponible:
-        options?.keepOnceOnlyAvailable === true ||
-        !isOnceOnlyBenefit(definition) ||
-        !consumidoAt,
-      consumidoAt,
-      consumidoVentaId: usage?.ventaId,
-    };
-  });
+  const snaps = await firestorePos.getAll(
+    ...limitados.map((item) =>
+      consumosCol().doc(buildConsumoId(jornadaId, memberId, item.id)),
+    ),
+  );
+
+  const consumidos = new Set<string>();
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    const benefitId = snap.data()?.benefitId;
+    if (typeof benefitId === "string") consumidos.add(benefitId);
+  }
+  return consumidos;
 };
 
 export const verifyAbonado = async (
@@ -228,32 +210,19 @@ export const verifyAbonado = async (
     "Abonado";
   const email = (data.email as string | undefined)?.trim() ?? "";
 
-  const concesionNombre = concesionId
-    ? await getConcessionNombre(concesionId)
-    : null;
-  let scopedDefinitions = filterBenefitsForConcesion(
-    ABONADO_BENEFITS_CATALOG,
-    concesionId,
-    concesionNombre,
-  );
-  let active2x1ProductIds: string[] = [];
+  let benefits: AbonadoBenefitStatus[] = [];
   try {
-    active2x1ProductIds = await loadActive2x1ProductIds(concesionId);
-    scopedDefinitions = attachActive2x1ProductIds(
-      scopedDefinitions,
-      active2x1ProductIds,
+    const definitions = await loadActiveDescuentoBenefits(concesionId);
+    const consumidos = await loadBeneficiosConsumidos(
+      userDocument.snap.id,
+      definitions,
+    );
+    benefits = definitions.map((definition) =>
+      toBenefitStatus(definition, !consumidos.has(definition.id)),
     );
   } catch (error) {
-    console.error("No se pudieron leer descuentos 2x1 activos", error);
+    console.error("No se pudieron leer descuentos activos de la concesión", error);
   }
-
-  console.log("[abonado] verify", {
-    memberId: userDocument.snap.id,
-    concesionId: concesionId ?? null,
-    concesionNombre,
-    benefitIds: scopedDefinitions.map((item) => item.id),
-    active2x1ProductIds,
-  });
 
   return {
     memberId: userDocument.snap.id,
@@ -262,9 +231,7 @@ export const verifyAbonado = async (
     isSubscriber: true,
     event: verification?.event,
     season: verification?.season,
-    benefits: buildBenefitStatuses(verification, scopedDefinitions, {
-      keepOnceOnlyAvailable: active2x1ProductIds.length > 0,
-    }),
+    benefits,
   };
 };
 
@@ -287,9 +254,18 @@ export const consumeAbonadoBenefit = async (params: {
     throw new ApiError(400, "ID de venta inválido", true, "INVALID_VENTA_ID");
   }
 
-  const definition = getBenefitDefinition(benefitId);
-  if (!definition) {
-    throw new ApiError(404, "Beneficio no encontrado", true, "BENEFIT_NOT_FOUND");
+  const descuento = (await getDescuentoById(benefitId)) as Record<
+    string,
+    unknown
+  > & { id: string };
+  const mapped = mapDescuentoToBenefit(descuento);
+  if (!mapped) {
+    throw new ApiError(
+      404,
+      "El descuento no está activo o no aplica a abonados",
+      true,
+      "BENEFIT_NOT_FOUND",
+    );
   }
 
   const userDocument = await getUserDocumentByUid(trimmedId);
@@ -309,41 +285,48 @@ export const consumeAbonadoBenefit = async (params: {
     );
   }
 
-  // Permanent benefits (e.g. cerveza precio abonado): no once-only tracking.
-  if (!isOnceOnlyBenefit(definition)) {
+  const memberDocId = userDocument.snap.id;
+
+  // Monto y porcentaje no se agotan; solo 2x1/3x2 se limitan por jornada.
+  if (!isQuantityPromo(mapped.tipo)) {
     return {
-      memberId: userDocument.snap.id,
+      memberId: memberDocId,
       benefitId,
       ventaId,
       consumedAt: new Date().toISOString(),
     };
   }
 
-  const consumed = { ...(verification.posBeneficiosConsumidos ?? {}) };
-  const existing = consumed[benefitId];
-  if (existing?.consumedAt) {
-    throw new ApiError(
-      409,
-      "Este beneficio ya fue consumido",
-      true,
-      "BENEFIT_ALREADY_CONSUMED",
-    );
-  }
+  const jornadaId = await resolveJornadaIdActiva();
+  const consumoRef = consumosCol().doc(
+    buildConsumoId(jornadaId, memberDocId, benefitId),
+  );
 
-  const consumedAt = admin.firestore.Timestamp.now();
-  consumed[benefitId] = { ventaId, consumedAt };
+  const consumedAt = await firestorePos.runTransaction(async (tx) => {
+    const snap = await tx.get(consumoRef);
+    if (snap.exists) {
+      // Ya se gastó en esta jornada: se respeta el primer consumo.
+      const previo = snap.data()?.consumedAt;
+      return typeof previo === "string" ? previo : new Date().toISOString();
+    }
 
-  await userDocument.ref.update({
-    seasonPassVerification: {
-      ...verification,
-      posBeneficiosConsumidos: consumed,
-    },
+    const now = new Date().toISOString();
+    tx.set(consumoRef, {
+      memberId: memberDocId,
+      benefitId,
+      tipo: mapped.tipo,
+      jornadaId,
+      ventaId,
+      consumedAt: now,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return now;
   });
 
   return {
-    memberId: userDocument.snap.id,
+    memberId: memberDocId,
     benefitId,
     ventaId,
-    consumedAt: consumedAt.toDate().toISOString(),
+    consumedAt,
   };
 };

@@ -400,10 +400,7 @@ export const aggregatePromociones2x1FromVentas = (
 
   for (const venta of ventas) {
     const abonado = venta.abonado as Record<string, unknown> | null | undefined;
-    if (
-      !abonado ||
-      !PROMO_2X1_BENEFIT_IDS.has(String(abonado.benefitId ?? ""))
-    ) {
+    if (!abonado || Number(abonado.unidadesGratis ?? 0) <= 0) {
       continue;
     }
     if (Number(abonado.montoDescuento ?? 0) <= 0) {
@@ -729,7 +726,8 @@ export const aggregateFierabonadosFromVentas = (
     const abonado = venta.abonado as Record<string, unknown> | null | undefined;
     if (
       !abonado ||
-      String(abonado.benefitId ?? "") !== CERVEZA_ABONADO_BENEFIT_ID
+      Number(abonado.montoDescuento ?? 0) <= 0 ||
+      Number(abonado.unidadesGratis ?? 0) > 0
     ) {
       continue;
     }
@@ -807,16 +805,6 @@ export const aggregateCombosFromVentas = (
 
   return { montoTotal, cantidadVendidos, items };
 };
-
-export const ICE_2X1_BENEFIT_ID = "ice-2x1";
-export const PAPAS_2X1_BENEFIT_ID = "papas-2x1";
-export const CERVEZA_ABONADO_BENEFIT_ID = "cerveza-precio-abonado";
-
-/** Beneficios abonado tipo 2x1 (cortesía) que cuentan en promociones2x1 del corte. */
-export const PROMO_2X1_BENEFIT_IDS = new Set([
-  ICE_2X1_BENEFIT_ID,
-  PAPAS_2X1_BENEFIT_ID,
-]);
 
 /**
  * Arqueo de caja: compara el efectivo contado físicamente con el esperado.

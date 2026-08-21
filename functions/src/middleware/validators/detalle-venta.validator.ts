@@ -27,6 +27,7 @@ const abonadoVentaSchema = z
     montoTotal: z.number().nonnegative(),
     montoDescuento: z.number().nonnegative(),
     unidadesGratis: z.number().int().nonnegative(),
+    tipo: z.string().trim().min(1).optional(),
   })
   .strict();
 

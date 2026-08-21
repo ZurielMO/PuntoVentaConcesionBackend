@@ -1,4 +1,4 @@
-import { mergeResolvedLineas, resolvePrecio } from "../src/services/detalle-venta.service";
+import { computeVentaTotal, mergeResolvedLineas, resolvePrecio } from "../src/services/detalle-venta.service";
 
 describe("resolvePrecio", () => {
   it("prioriza precio_actual del POS sobre precio_jornada e inventario", () => {
@@ -162,5 +162,35 @@ describe("mergeResolvedLineas", () => {
     ];
 
     expect(mergeResolvedLineas(input)).toEqual(input);
+  });
+});
+
+describe("computeVentaTotal", () => {
+  const lineas = [{ subtotal: 130 }];
+
+  it("resta el descuento MONTO del total de líneas", () => {
+    expect(
+      computeVentaTotal(lineas, {
+        benefitId: "desc-1",
+        titulo: "Descuento abonado cerveza",
+        montoTotal: 130,
+        montoDescuento: 40,
+        unidadesGratis: 0,
+        tipo: "MONTO",
+      }),
+    ).toBe(90);
+  });
+
+  it("no vuelve a restar 2x1 ni porcentaje (ya va en el precio de línea)", () => {
+    expect(
+      computeVentaTotal([{ subtotal: 80 }], {
+        benefitId: "2x1",
+        titulo: "ABONADOS 2X1",
+        montoTotal: 80,
+        montoDescuento: 80,
+        unidadesGratis: 1,
+        tipo: "2X1",
+      }),
+    ).toBe(80);
   });
 });

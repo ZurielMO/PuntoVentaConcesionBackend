@@ -9,9 +9,6 @@ import {
   aggregateCombosFromVentas,
   computeDiferenciaCaja,
   buildCorteWritePayload,
-  CERVEZA_ABONADO_BENEFIT_ID,
-  ICE_2X1_BENEFIT_ID,
-  PAPAS_2X1_BENEFIT_ID,
 } from "../src/services/corte.service";
 import {
   assertNoCorteCerradoForVenta,
@@ -307,7 +304,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 80,
           abonado: {
-            benefitId: ICE_2X1_BENEFIT_ID,
+            benefitId: "UboJ59rN4TpMHjkbSFp4",
             titulo: "ICE 2x1",
             montoTotal: 80,
             montoDescuento: 40,
@@ -317,7 +314,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 50,
           abonado: {
-            benefitId: ICE_2X1_BENEFIT_ID,
+            benefitId: "UboJ59rN4TpMHjkbSFp4",
             titulo: "ICE 2x1",
             montoTotal: 120,
             montoDescuento: 40,
@@ -340,7 +337,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 150,
           abonado: {
-            benefitId: PAPAS_2X1_BENEFIT_ID,
+            benefitId: "descuento-papas-activo",
             titulo: "Papas 2x1",
             montoTotal: 150,
             montoDescuento: 150,
@@ -362,7 +359,7 @@ describe("aggregatePromociones2x1FromVentas", () => {
         {
           total: 450,
           abonado: {
-            benefitId: CERVEZA_ABONADO_BENEFIT_ID,
+            benefitId: "descuento-monto-cerveceria",
             titulo: "Precio abonado cerveza",
             montoTotal: 450,
             montoDescuento: 200,
@@ -569,7 +566,7 @@ describe("aggregateFierabonadosFromVentas", () => {
         {
           total: 450,
           abonado: {
-            benefitId: CERVEZA_ABONADO_BENEFIT_ID,
+            benefitId: "descuento-monto-cerveceria",
             titulo: "Precio abonado cerveza",
             montoTotal: 450,
             montoDescuento: 200,
@@ -582,7 +579,7 @@ describe("aggregateFierabonadosFromVentas", () => {
         {
           total: 80,
           abonado: {
-            benefitId: ICE_2X1_BENEFIT_ID,
+            benefitId: "UboJ59rN4TpMHjkbSFp4",
             titulo: "ICE 2x1",
             montoTotal: 80,
             montoDescuento: 40,

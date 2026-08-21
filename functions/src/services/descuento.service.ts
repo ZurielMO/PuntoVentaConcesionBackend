@@ -86,14 +86,15 @@ export const listDescuentos = async (filters?: {
   includeInactive?: boolean;
 }) => {
   let query: FirebaseFirestore.Query = col();
-  if (!filters?.includeInactive) {
-    query = query.where("activo", "==", true);
-  }
   if (filters?.concesionId) {
     query = query.where("concesion_id", "==", filters.concesionId);
+  } else if (!filters?.includeInactive) {
+    query = query.where("activo", "==", true);
   }
   const snap = await query.get();
-  return snap.docs.map(toData);
+  const rows = snap.docs.map(toData);
+  if (filters?.includeInactive) return rows;
+  return rows.filter((row) => (row as { activo?: boolean }).activo !== false);
 };
 
 export const getDescuentoById = async (id: string) => {

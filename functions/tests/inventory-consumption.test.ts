@@ -162,3 +162,89 @@ describe("inventory-consumption.config", () => {
     expect(piezaDraw.cantidad > piezaStock).toBe(true);
   });
 });
+
+describe("SUTEP promo consume cerveza base", () => {
+  const catalogSutep = [
+    { id: "promo-victoria", nombre: "PROMO VICTORIA" },
+    { id: "victoria", nombre: "VICTORIA" },
+    { id: "promo-corona", nombre: "PROMO CORONA" },
+    { id: "corona", nombre: "CORONA" },
+  ];
+
+  it("en catalogo ICE sin promos no descuenta victoria", () => {
+    const draws = expandInventoryConsumptionDraws({
+      lineas: [{ producto: "promo-victoria", cantidad: 2 }],
+      catalogProducts: catalog,
+      concesionNombre: "ICE",
+    });
+    expect(draws).toEqual([{ producto: "promo-victoria", cantidad: 2 }]);
+  });
+
+  it("2 promo victoria descuenta 2 victoria", () => {
+    const draws = expandInventoryConsumptionDraws({
+      lineas: [{ producto: "promo-victoria", cantidad: 2 }],
+      catalogProducts: catalogSutep,
+      concesionNombre: "SUTEP",
+    });
+    const byId = new Map(draws.map((d) => [d.producto, d.cantidad]));
+    expect(byId.get("promo-victoria")).toBe(2);
+    expect(byId.get("victoria")).toBe(2);
+  });
+
+  it("2 promo corona descuenta 2 corona", () => {
+    const draws = expandInventoryConsumptionDraws({
+      lineas: [{ producto: "promo-corona", cantidad: 2 }],
+      catalogProducts: catalogSutep,
+      concesionNombre: "SUTEP",
+    });
+    const byId = new Map(draws.map((d) => [d.producto, d.cantidad]));
+    expect(byId.get("promo-corona")).toBe(2);
+    expect(byId.get("corona")).toBe(2);
+  });
+
+  it("no toma PROMO VICTORIA como el SKU victoria", () => {
+    const promoFirst = [
+      { id: "promo-victoria", nombre: "PROMO VICTORIA" },
+      { id: "victoria", nombre: "VICTORIA" },
+    ];
+    const linked = findProductMatching(
+      promoFirst,
+      ["victoria"],
+      undefined,
+      undefined,
+      ["promo"],
+    );
+    expect(linked?.id).toBe("victoria");
+  });
+
+  it("vender victoria suelta no toca la promo", () => {
+    const draws = expandInventoryConsumptionDraws({
+      lineas: [{ producto: "victoria", cantidad: 2 }],
+      catalogProducts: catalogSutep,
+      concesionNombre: "SUTEP",
+    });
+    expect(draws).toEqual([{ producto: "victoria", cantidad: 2 }]);
+  });
+
+  it("descuenta victoria aunque el inicial de promo y victoria no cuadren", () => {
+    const draws = expandInventoryConsumptionDraws({
+      lineas: [{ producto: "promo-victoria", cantidad: 2 }],
+      catalogProducts: catalogSutep,
+      concesionNombre: "SUTEP",
+    });
+    const byId = new Map(draws.map((d) => [d.producto, d.cantidad]));
+    expect(byId.get("promo-victoria")).toBe(2);
+    expect(byId.get("victoria")).toBe(2);
+  });
+
+  it("aplica por catalogo aunque el nombre de concesion no sea SUTEP", () => {
+    const draws = expandInventoryConsumptionDraws({
+      lineas: [{ producto: "promo-corona", cantidad: 2 }],
+      catalogProducts: catalogSutep,
+      concesionNombre: "HAPPY HOUR 7",
+    });
+    const byId = new Map(draws.map((d) => [d.producto, d.cantidad]));
+    expect(byId.get("promo-corona")).toBe(2);
+    expect(byId.get("corona")).toBe(2);
+  });
+});

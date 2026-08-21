@@ -50,6 +50,7 @@ export interface AbonadoVentaInput {
   montoTotal: number;
   montoDescuento: number;
   unidadesGratis: number;
+  tipo?: string;
 }
 
 interface ResolvedLinea {
@@ -61,6 +62,20 @@ interface ResolvedLinea {
 
 const computeTotal = (lineas: { subtotal: number }[]) =>
   Math.round(lineas.reduce((acc, l) => acc + l.subtotal, 0) * 100) / 100;
+
+/** MONTO se aplica al total de la venta; 2x1/% ya van en el precio de línea. */
+export const computeVentaTotal = (
+  lineas: { subtotal: number }[],
+  abonado?: AbonadoVentaInput | null,
+): number => {
+  const lineasTotal = computeTotal(lineas);
+  const tipo = String(abonado?.tipo ?? "").trim().toUpperCase();
+  const descuento = Number(abonado?.montoDescuento ?? 0);
+  if (tipo !== "MONTO" || !(descuento > 0)) {
+    return lineasTotal;
+  }
+  return Math.round(Math.max(0, lineasTotal - descuento) * 100) / 100;
+};
 
 /**
  * Agrupa líneas por producto + precio unitario.
@@ -468,7 +483,7 @@ export const createDetalleVenta = async (params: {
   const lineas = mergeResolvedLineas(
     await resolveLineas(params.inventarioId, params.productos),
   );
-  const total = computeTotal(lineas);
+  const total = computeVentaTotal(lineas, params.abonado);
   const metodoPago = params.metodoPago ?? "efectivo";
   const puntosUsados = Math.max(0, Math.trunc(params.puntosUsados ?? 0));
 
@@ -647,6 +662,7 @@ export const createDetalleVenta = async (params: {
               montoTotal: roundMoney(params.abonado.montoTotal),
               montoDescuento: roundMoney(params.abonado.montoDescuento),
               unidadesGratis: params.abonado.unidadesGratis,
+              tipo: params.abonado.tipo?.trim() || null,
             }
           : null;
 
@@ -838,7 +854,8 @@ export const updateDetalleVenta = async (
 
   const inventarioId = doc.data()?.inventarioId as string;
   const lineas = mergeResolvedLineas(await resolveLineas(inventarioId, productos));
-  const total = computeTotal(lineas);
+  const abonado = doc.data()?.abonado as AbonadoVentaInput | undefined;
+  const total = computeVentaTotal(lineas, abonado);
 
   const detalleRef = ref.collection(SUBCOLLECTIONS.DETALLE);
   const existing = await detalleRef.get();

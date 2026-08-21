@@ -22,7 +22,17 @@ export interface InventoryConsumptionRule {
    * Cada entrada es un AND de tokens, igual que consumeProductNameTokens.
    */
   consumeProductNameTokenAliases?: string[][];
+  /**
+   * Tokens que el producto de consumo NO debe tener (AND).
+   * Evita que "PROMO VICTORIA" se resuelva como el SKU "VICTORIA".
+   */
+  consumeExcludeNameTokens?: string[];
   consumeProductIds?: string[];
+  /**
+   * Si true, la regla también corre cuando el catálogo de la venta trae el
+   * producto trigger (el catálogo ya va filtrado por concesión).
+   */
+  applyWhenCatalogMatches?: boolean;
   /** Unidades del producto de consumo por cada unidad vendida del trigger. */
   consumeQtyPerUnit: number;
 }
@@ -107,14 +117,27 @@ export const findProductMatching = (
   nameTokens: string[],
   productIds?: string[],
   nameTokenAliases?: string[][],
+  excludeNameTokens?: string[],
 ): CatalogProductRef | undefined => {
   const tokenSets = [nameTokens, ...(nameTokenAliases ?? [])].filter(
     (tokens) => tokens.length > 0,
   );
+  const exclude = excludeNameTokens ?? [];
   for (const tokens of tokenSets) {
-    const found = products.find((product) =>
-      productMatchesTokens(product.id, product.nombre, tokens, productIds),
-    );
+    const found = products.find((product) => {
+      if (
+        exclude.length > 0 &&
+        productMatchesTokens(product.id, product.nombre, exclude)
+      ) {
+        return false;
+      }
+      return productMatchesTokens(
+        product.id,
+        product.nombre,
+        tokens,
+        productIds,
+      );
+    });
     if (found) return found;
   }
   return undefined;
@@ -132,6 +155,24 @@ export const INVENTORY_CONSUMPTION_RULES: InventoryConsumptionRule[] = [
     consumeProductNameTokenAliases: [["unidad", "cerveza"]],
     consumeProductIds: parseCsv(process.env.CERVEZA_PIEZA_PRODUCT_IDS),
     consumeQtyPerUnit: Number(process.env.CERVEZA_VASO_PIEZAS_PER_VASO ?? 2),
+  },
+  {
+    id: "sutep-promo-victoria-consume-victoria",
+    concesionNombreTokens: ["sutep"],
+    triggerProductNameTokens: ["promo", "victoria"],
+    consumeProductNameTokens: ["victoria"],
+    consumeExcludeNameTokens: ["promo"],
+    consumeQtyPerUnit: 1,
+    applyWhenCatalogMatches: true,
+  },
+  {
+    id: "sutep-promo-corona-consume-corona",
+    concesionNombreTokens: ["sutep"],
+    triggerProductNameTokens: ["promo", "corona"],
+    consumeProductNameTokens: ["corona"],
+    consumeExcludeNameTokens: ["promo"],
+    consumeQtyPerUnit: 1,
+    applyWhenCatalogMatches: true,
   },
 ];
 
@@ -179,13 +220,22 @@ export const expandInventoryConsumptionDraws = (params: {
   );
 
   for (const rule of INVENTORY_CONSUMPTION_RULES) {
-    if (
-      !ruleAppliesToConcesion(
-        rule,
-        params.concesionId,
-        params.concesionNombre,
-      )
-    ) {
+    const appliesByConcesion = ruleAppliesToConcesion(
+      rule,
+      params.concesionId,
+      params.concesionNombre,
+    );
+    const appliesByCatalog =
+      rule.applyWhenCatalogMatches === true &&
+      params.catalogProducts.some((product) =>
+        productMatchesTokens(
+          product.id,
+          product.nombre,
+          rule.triggerProductNameTokens,
+          rule.triggerProductIds,
+        ),
+      );
+    if (!appliesByConcesion && !appliesByCatalog) {
       continue;
     }
 
@@ -214,6 +264,7 @@ export const expandInventoryConsumptionDraws = (params: {
           rule.consumeProductNameTokens,
           rule.consumeProductIds,
           rule.consumeProductNameTokenAliases,
+          rule.consumeExcludeNameTokens,
         );
       }
 
