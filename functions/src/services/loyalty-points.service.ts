@@ -502,6 +502,11 @@ export const cancelRedemptionHold = async (params: {
 const buildPosAccumulationMovementDocId = (ventaId: string): string =>
   `pos_acc_${ventaId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120)}`;
 
+const toSaldoPuntos = (value: unknown): number => {
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+
 const assignPointsBySaleInUsuariosApp = async (params: {
   memberId: string;
   total: number;
@@ -517,53 +522,66 @@ const assignPointsBySaleInUsuariosApp = async (params: {
   const userRef = firestoreApp.collection(USUARIOS_APP_COLLECTION).doc(user.id);
   const docId = buildPosAccumulationMovementDocId(params.ventaId);
   const movRef = userRef.collection(MOVIMIENTOS_PUNTOS_SUBCOLLECTION).doc(docId);
-  const existing = await movRef.get();
-  if (existing.exists) {
-    const data = existing.data() as { saldoNuevo?: number } | undefined;
-    const puntosActuales = Number(
-      data?.saldoNuevo ?? user.data.puntosActuales ?? 0,
-    );
-    return {
-      memberId: user.id,
-      montoVenta: params.total,
-      puntosAsignados: params.puntosAsignados,
-      puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
-      descripcion: params.descripcion,
-      externalResponse: { source: "usuariosApp", alreadyAssigned: true },
-    };
-  }
 
-  const saldoAnterior = Number(user.data.puntosActuales ?? 0);
-  const saldoNuevo = saldoAnterior + params.puntosAsignados;
+  // El movimiento y el saldo se escriben en una sola transacción: separarlos
+  // permite que dos cajas concurrentes lean el mismo saldoAnterior y que una
+  // pise los puntos de la otra.
+  const { puntosActuales, alreadyAssigned } = await firestoreApp.runTransaction(
+    async (tx) => {
+      const [movSnap, userSnap] = await Promise.all([
+        tx.get(movRef),
+        tx.get(userRef),
+      ]);
+      const saldoVigente = toSaldoPuntos(userSnap.data()?.puntosActuales);
 
-  await movRef.set({
-    id: docId,
-    usuarioId: user.id,
-    tipo: "ACUMULACION",
-    puntos: params.puntosAsignados,
-    saldoAnterior,
-    saldoNuevo,
-    origen: "pos",
-    origenId: params.ventaId,
-    referencia: params.ventaId,
-    descripcion: params.descripcion,
-    createdAt: FieldValue.serverTimestamp(),
-  });
-  await userRef.set(
-    {
-      puntosActuales: saldoNuevo,
-      updatedAt: FieldValue.serverTimestamp(),
+      if (movSnap.exists) {
+        const saldoRegistrado = Number(movSnap.data()?.saldoNuevo);
+        return {
+          puntosActuales: Number.isFinite(saldoRegistrado)
+            ? saldoRegistrado
+            : saldoVigente,
+          alreadyAssigned: true,
+        };
+      }
+
+      if (!userSnap.exists) {
+        throw new ApiError(404, "Socio no encontrado", true, "MEMBER_NOT_FOUND");
+      }
+
+      const saldoNuevo = saldoVigente + params.puntosAsignados;
+      tx.set(movRef, {
+        id: docId,
+        usuarioId: user.id,
+        tipo: "ACUMULACION",
+        puntos: params.puntosAsignados,
+        saldoAnterior: saldoVigente,
+        saldoNuevo,
+        origen: "pos",
+        origenId: params.ventaId,
+        referencia: params.ventaId,
+        descripcion: params.descripcion,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(
+        userRef,
+        {
+          puntosActuales: saldoNuevo,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return { puntosActuales: saldoNuevo, alreadyAssigned: false };
     },
-    { merge: true },
   );
 
   return {
     memberId: user.id,
     montoVenta: params.total,
     puntosAsignados: params.puntosAsignados,
-    puntosActuales: saldoNuevo,
+    puntosActuales,
     descripcion: params.descripcion,
-    externalResponse: { source: "usuariosApp", alreadyAssigned: false },
+    externalResponse: { source: "usuariosApp", alreadyAssigned },
   };
 };
 
@@ -618,6 +636,17 @@ export const assignPointsBySale = async (params: {
       externalResponse: resp.data,
     };
   } catch (error) {
+    // El fallback escribe el saldo legacy sin pasar por el ledger de Club León,
+    // así que debe quedar registrado: si aparece seguido, la causa real es que
+    // la API de acumulación está caída o sin credenciales válidas.
+    console.warn("[loyalty] acumulación por API falló, usando fallback Firestore", {
+      ventaId,
+      status: axios.isAxiosError(error) ? error.response?.status : undefined,
+      code: axios.isAxiosError(error) ? error.code : undefined,
+      backendMessage: axios.isAxiosError(error)
+        ? (error.response?.data as { message?: string } | undefined)?.message
+        : undefined,
+    });
     try {
       return await assignPointsBySaleInUsuariosApp({
         memberId: trimmedId,
