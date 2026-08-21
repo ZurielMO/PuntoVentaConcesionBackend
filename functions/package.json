@@ -18,7 +18,8 @@
     "test": "jest --runInBand",
     "logs": "firebase functions:log",
     "migrate:users-app-oficial": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts",
-    "migrate:users-app-oficial:promote": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts --promote-conflicts"
+    "migrate:users-app-oficial:promote": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts --promote-conflicts",
+    "cinepolis:ensure-cashier": "ts-node --transpile-only scripts/ensure-cinepolis-cashier.ts"
   },
   "dependencies": {
     "axios": "^1.18.1",

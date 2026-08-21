@@ -27,6 +27,38 @@ describe("assertCajaActivaForPosLogin", () => {
     expect(mockedGetCajaById).not.toHaveBeenCalled();
   });
 
+  it("no valida caja para el cajero Cinépolis sin caja asignada", async () => {
+    await expect(
+      assertCajaActivaForPosLogin({
+        id: "cine-1",
+        uid: "cine-1",
+        email: "cinepoliscl@clubleon.mx",
+        rol: "CONCESION_VENDEDOR",
+        sucursalId: null,
+        cajaId: null,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(mockedGetCajaById).not.toHaveBeenCalled();
+  });
+
+  it("no valida caja para Cinépolis aunque el perfil no traiga email", async () => {
+    await expect(
+      assertCajaActivaForPosLogin(
+        {
+          id: "cine-1",
+          uid: "cine-1",
+          rol: "CONCESION_VENDEDOR",
+          sucursalId: null,
+          cajaId: null,
+        },
+        "cinepoliscl@clubleon.mx",
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(mockedGetCajaById).not.toHaveBeenCalled();
+  });
+
   it("rechaza login de VENDEDOR sin caja asignada", async () => {
     await expect(
       assertCajaActivaForPosLogin({

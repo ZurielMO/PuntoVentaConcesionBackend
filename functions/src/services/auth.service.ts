@@ -10,7 +10,10 @@ import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { UserRole } from "../models";
 import { ApiError } from "../utils/api-error";
+import { isCinepolisCashierEmail } from "../config/cinepolis.constants";
 import {
+  CONCESION_ROLES,
+  isConcesionRole,
   isPosEligibleUser,
   toConcesionRole,
   toInternalRole,
@@ -177,20 +180,58 @@ const legacyPosUserToAppProfile = (
   };
 };
 
+const toCinepolisSessionProfile = (
+  profile: UsuariosAppProfile,
+  uid: string,
+  email: string,
+): UsuariosAppProfile => {
+  const resolvedEmail = email.toLowerCase().trim();
+  return {
+    ...profile,
+    id: profile.id || uid,
+    uid: profile.uid || uid,
+    email: resolvedEmail,
+    nombre: profile.nombre?.trim() || "Cinépolis",
+    activo: profile.activo !== false,
+    from_concesion: true,
+    rol: isConcesionRole(profile.rol)
+      ? toConcesionRole(String(profile.rol))
+      : CONCESION_ROLES.VENDEDOR,
+  };
+};
+
 /**
  * Resuelve el perfil POS: usuariosApp con rol de concesión, o fallback a `users`
  * legado si el email ya existía como CLIENTE en la app oficial (sin migración).
+ * El cajero Cinépolis entra por el mismo login aunque no tenga caja ni
+ * `from_concesion` completo.
  */
 export const resolvePosProfile = async (
   uid: string,
   email?: string,
 ): Promise<UsuariosAppProfile> => {
   const appProfile = await findUsuariosAppProfile(uid, email);
+  const lookupEmail = (email ?? appProfile?.email)?.toLowerCase().trim();
+
+  if (lookupEmail && isCinepolisCashierEmail(lookupEmail)) {
+    if (!appProfile) {
+      throw new ApiError(
+        403,
+        "Usuario no registrado en el sistema de concesiones",
+        true,
+        "NOT_CONCESION_USER",
+      );
+    }
+    if (appProfile.activo === false) {
+      throw new ApiError(403, "La cuenta está desactivada", true, "USER_INACTIVE");
+    }
+    return toCinepolisSessionProfile(appProfile, uid, lookupEmail);
+  }
+
   if (appProfile && isPosEligibleUser(appProfile)) {
     return appProfile;
   }
 
-  const lookupEmail = (email ?? appProfile?.email)?.toLowerCase().trim();
   if (lookupEmail) {
     const legacy = await findLegacyPosUserByEmail(lookupEmail);
     if (legacy) {
@@ -286,7 +327,14 @@ const CAJA_NO_ASIGNADA_MESSAGE =
  */
 export const assertCajaActivaForPosLogin = async (
   profile: UsuariosAppProfile,
+  loginEmail?: string,
 ) => {
+  if (
+    isCinepolisCashierEmail(profile.email) ||
+    isCinepolisCashierEmail(loginEmail)
+  ) {
+    return;
+  }
   if (toInternalRole(profile.rol) !== UserRole.VENDEDOR) return;
 
   const sucursalId = profile.sucursalId?.trim();
@@ -401,7 +449,7 @@ export const loginWithPassword = async (email: string, password: string) => {
   }
 
   const profile = await resolvePosProfile(uid, resolvedEmail);
-  await assertCajaActivaForPosLogin(profile);
+  await assertCajaActivaForPosLogin(profile, resolvedEmail);
 
   // Sincronizar claims (admin siempre false para concesiones)
   try {
@@ -421,6 +469,6 @@ export const loginWithPassword = async (email: string, password: string) => {
 export const resolveSessionFromToken = async (token: string) => {
   const decoded = verifyPosJwt(token);
   const profile = await resolvePosProfile(decoded.uid, decoded.email);
-  await assertCajaActivaForPosLogin(profile);
+  await assertCajaActivaForPosLogin(profile, decoded.email);
   return toPosUsuario(profile);
 };

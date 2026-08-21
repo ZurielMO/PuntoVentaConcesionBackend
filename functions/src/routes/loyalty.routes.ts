@@ -1,8 +1,18 @@
 import { Router } from "express";
 import { authMiddleware } from "../utils/middlewares";
-import { requireAuthenticated } from "../utils/roles.middlewares";
-import { validateBody } from "../middleware/validation.middleware";
-import { consumeAbonadoBenefitSchema } from "../middleware/validators/loyalty.validator";
+import {
+  requireAuthenticated,
+  requireCinepolisCashier,
+} from "../utils/roles.middlewares";
+import {
+  validateBody,
+  validateQuery,
+} from "../middleware/validation.middleware";
+import {
+  assignCinepolisPointsSchema,
+  cinepolisAsignacionesQuerySchema,
+  consumeAbonadoBenefitSchema,
+} from "../middleware/validators/loyalty.validator";
 import * as loyaltyQuery from "../controllers/loyalty/loyalty.query.controller";
 import * as loyaltyCommand from "../controllers/loyalty/loyalty.command.controller";
 
@@ -33,6 +43,20 @@ router.post(
   requireAuthenticated,
   validateBody(consumeAbonadoBenefitSchema),
   loyaltyCommand.consumeAbonadoBenefit,
+);
+
+router.post(
+  "/cinepolis/asignar",
+  requireCinepolisCashier,
+  validateBody(assignCinepolisPointsSchema),
+  loyaltyCommand.assignCinepolisPoints,
+);
+
+router.get(
+  "/cinepolis/asignaciones",
+  requireCinepolisCashier,
+  validateQuery(cinepolisAsignacionesQuerySchema),
+  loyaltyQuery.listCinepolisAsignaciones,
 );
 
 export default router;

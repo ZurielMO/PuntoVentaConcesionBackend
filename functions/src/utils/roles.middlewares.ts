@@ -3,6 +3,7 @@ import { ApiError } from "./api-error";
 import { asyncHandler } from "./error-handler";
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
+import { isCinepolisCashierEmail } from "../config/cinepolis.constants";
 import { UserRole } from "../models";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,24 @@ export const requireAuthenticated = (
   next: NextFunction,
 ): void => {
   validateUser(req);
+  next();
+};
+
+/** Solo el cajero Cinépolis (email fijo) puede asignar puntos de esa pantalla. */
+export const requireCinepolisCashier = (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void => {
+  const user = validateUser(req);
+  if (!isCinepolisCashierEmail(user.email)) {
+    throw new ApiError(
+      403,
+      "Esta operación es exclusiva del cajero Cinépolis",
+      true,
+      "FORBIDDEN",
+    );
+  }
   next();
 };
 
