@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { authMiddleware } from "../utils/middlewares";
 import {
+  requireAdminOrSuperAdmin,
   requireAuthenticated,
   requireCinepolisCashier,
 } from "../utils/roles.middlewares";
@@ -57,6 +58,18 @@ router.get(
   requireCinepolisCashier,
   validateQuery(cinepolisAsignacionesQuerySchema),
   loyaltyQuery.listCinepolisAsignaciones,
+);
+
+router.get(
+  "/pendientes",
+  requireAdminOrSuperAdmin,
+  loyaltyCommand.listPendingLoyalty,
+);
+
+router.post(
+  "/pendientes/reprocesar",
+  requireAdminOrSuperAdmin,
+  loyaltyCommand.reprocessPendingLoyalty,
 );
 
 export default router;

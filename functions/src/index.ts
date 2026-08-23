@@ -23,6 +23,21 @@ import app from "./app";
 const serviceAccountAppOficial2 = defineSecret("SERVICE_ACCOUNT_APP_OFICIAL2");
 
 /**
+ * Credenciales de la cuenta de integración con BackendCL (Club León).
+ *
+ * Sin ellas `loginToBackendCl()` aborta con LOYALTY_NOT_CONFIGURED antes de
+ * emitir la petición, y toda acumulación de puntos del POS queda pendiente.
+ * Fue la causa del incidente de puntos: estaban en `.env.local` pero nunca
+ * llegaron al runtime desplegado, porque el deploy no publica archivos .env.
+ *
+ * Crear/actualizar:
+ *   npx firebase-tools functions:secrets:set BACKENDCL_AUTH_EMAIL --project puntoventacl
+ *   npx firebase-tools functions:secrets:set BACKENDCL_AUTH_PASSWORD --project puntoventacl
+ */
+const backendClAuthEmail = defineSecret("BACKENDCL_AUTH_EMAIL");
+const backendClAuthPassword = defineSecret("BACKENDCL_AUTH_PASSWORD");
+
+/**
  * Cloud Function HTTPS Gen2.
  *
  * Nombre `apiV2` (no `api`) porque en producción ya existe `api` en Gen1
@@ -36,7 +51,11 @@ export const apiV2 = onRequest(
   {
     memory: "1GiB",
     invoker: "public",
-    secrets: [serviceAccountAppOficial2],
+    secrets: [
+      serviceAccountAppOficial2,
+      backendClAuthEmail,
+      backendClAuthPassword,
+    ],
   },
   (req, res) => {
     app(req, res);

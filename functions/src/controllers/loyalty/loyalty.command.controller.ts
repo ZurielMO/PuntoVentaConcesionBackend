@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { asyncHandler } from "../../utils/error-handler";
 import * as cinepolisPuntosService from "../../services/cinepolis-puntos.service";
 import * as loyaltyPointsService from "../../services/loyalty-points.service";
+import * as loyaltyOutboxService from "../../services/loyalty-outbox.service";
 import * as abonadoService from "../../services/abonado.service";
 import * as detalleVentaService from "../../services/detalle-venta.service";
 import { ApiError } from "../../utils/api-error";
@@ -42,13 +43,59 @@ export const assignVentaPoints = asyncHandler(
       memberId,
       total,
       ventaId,
+      // Se propagan para que, si la operación queda pendiente, el registro
+      // conserve dónde se hizo la venta y se pueda auditar por concesión.
+      concesionId: comprobante?.concesionId as string | undefined,
+      sucursalId: comprobante?.sucursalId as string | undefined,
+      cajaId: comprobante?.cajaId as string | undefined,
     });
 
     res.status(200).json({
       success: true,
       data: result,
-      message: "Puntos asignados correctamente",
+      message:
+        result.status === "PENDING"
+          ? "Venta registrada. Los puntos se acreditarán en cuanto Club León esté disponible"
+          : "Puntos asignados correctamente",
     });
+  },
+);
+
+/**
+ * Reintegra al ledger oficial las acumulaciones que quedaron encoladas por una
+ * caída de BackendCL. Seguro de reejecutar: cada venta se acredita una sola vez.
+ */
+export const reprocessPendingLoyalty = asyncHandler(
+  async (req: Request, res: Response) => {
+    const rawLimit = Number((req.query.limit as string | undefined) ?? 50);
+    const limit = Math.min(
+      Math.max(Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 50, 1),
+      200,
+    );
+
+    const result = await loyaltyPointsService.reprocessPendingAccruals(limit);
+    const restantes = await loyaltyOutboxService.countPendingAccruals();
+
+    res.status(200).json({
+      success: true,
+      data: { ...result, restantes },
+      message: `Reproceso terminado: ${result.completadas} acreditadas, ${result.yaProcesadas} ya estaban en el ledger, ${result.fallidas} fallidas`,
+    });
+  },
+);
+
+export const listPendingLoyalty = asyncHandler(
+  async (req: Request, res: Response) => {
+    const rawLimit = Number((req.query.limit as string | undefined) ?? 50);
+    const limit = Math.min(
+      Math.max(Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 50, 1),
+      200,
+    );
+    const [items, totales] = await Promise.all([
+      loyaltyOutboxService.listPendingAccruals(limit),
+      loyaltyOutboxService.countPendingAccruals(),
+    ]);
+    res.status(200).json({ success: true, data: { items, totales } });
   },
 );
 
