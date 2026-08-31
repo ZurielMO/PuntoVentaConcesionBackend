@@ -2,10 +2,19 @@ import { firestorePos } from "../config/firebase";
 import { getRealtimeDbAppOficial2 } from "../config/firebase.appoficial2";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
-import { buildJornadaId } from "./asignacion-caja.service";
+import {
+  buildJornadaId,
+  normalizeRama,
+  parseJornadaId,
+  type JornadaRama,
+} from "./asignacion-caja.service";
 import { normalizeFecha } from "./inventario.service";
 
 const JORNADA_ACTIVA_PATH = "jornada_activa";
+const JORNADA_ACTIVA_FEMENIL_PATH = "jornada_activa_femenil";
+
+export type { JornadaRama };
+export { normalizeRama, parseJornadaId, buildJornadaId };
 
 export interface JornadaActivaValue {
   activo?: boolean;
@@ -15,35 +24,9 @@ export interface JornadaActivaValue {
   fecha?: string;
   hora?: string;
   jornada?: number;
+  rama?: JornadaRama;
   [key: string]: unknown;
 }
-
-/**
- * Devuelve el nodo `jornada_activa` filtrando solo las llaves con activo=true.
- * Respuesta en forma { [key]: JornadaActivaValue }.
- */
-export const getJornadaActiva = async (): Promise<
-  Record<string, JornadaActivaValue>
-> => {
-  const db = getRealtimeDbAppOficial2();
-  const snapshot = await db.ref(JORNADA_ACTIVA_PATH).get();
-
-  if (!snapshot.exists()) {
-    return {};
-  }
-
-  const value = snapshot.val() as Record<string, JornadaActivaValue>;
-
-  const activas: Record<string, JornadaActivaValue> = {};
-  for (const [key, jornada] of Object.entries(value)) {
-    if (jornada && jornada.activo === true) {
-      activas[key] = jornada;
-    }
-  }
-
-  // Fallback: si ninguna marca activo=true, devolver el nodo completo.
-  return Object.keys(activas).length > 0 ? activas : value;
-};
 
 const normalizeFechaJornada = (fecha: string): string => {
   const raw = fecha.trim();
@@ -53,16 +36,88 @@ const normalizeFechaJornada = (fecha: string): string => {
   return raw;
 };
 
-/** Primera jornada con activo=true; usa jornada y fecha para abrir inventario. */
-export const resolveJornadaPrimaria = async (): Promise<{
-  jornadaNumero: number;
-  fecha: string;
-  detalle: JornadaActivaValue;
+const readNodoActivo = async (
+  path: string,
+  rama: JornadaRama,
+): Promise<Record<string, JornadaActivaValue>> => {
+  const db = getRealtimeDbAppOficial2();
+  const snapshot = await db.ref(path).get();
+
+  if (!snapshot.exists()) {
+    return {};
+  }
+
+  const value = snapshot.val() as Record<string, JornadaActivaValue>;
+  const activas: Record<string, JornadaActivaValue> = {};
+  for (const [key, jornada] of Object.entries(value)) {
+    if (jornada && jornada.activo === true) {
+      activas[`${rama}:${key}`] = { ...jornada, rama };
+    }
+  }
+
+  if (Object.keys(activas).length > 0) {
+    return activas;
+  }
+
+  // Fallback: si ninguna marca activo=true, devolver el nodo completo etiquetado.
+  const fallback: Record<string, JornadaActivaValue> = {};
+  for (const [key, jornada] of Object.entries(value)) {
+    if (jornada) {
+      fallback[`${rama}:${key}`] = { ...jornada, rama };
+    }
+  }
+  return fallback;
+};
+
+/**
+ * Une `jornada_activa` + `jornada_activa_femenil`.
+ * Claves prefijadas (`varonil:Jornada6`) para evitar colisiones.
+ */
+export const getJornadaActiva = async (): Promise<
+  Record<string, JornadaActivaValue>
+> => {
+  const [varonil, femenil] = await Promise.all([
+    readNodoActivo(JORNADA_ACTIVA_PATH, "varonil"),
+    readNodoActivo(JORNADA_ACTIVA_FEMENIL_PATH, "femenil"),
+  ]);
+  return { ...varonil, ...femenil };
+};
+
+/** Primera entrada activa de una rama (o null). */
+export const pickJornadaActivaPorRama = (
+  activas: Record<string, JornadaActivaValue>,
+  rama: JornadaRama,
+): JornadaActivaValue | null => {
+  const entries = Object.values(activas).filter(
+    (j) => j && normalizeRama(j.rama) === rama,
+  );
+  if (entries.length === 0) return null;
+  return entries.find((j) => j.activo === true) ?? entries[0];
+};
+
+export const getJornadasActivasPorRama = async (): Promise<{
+  varonil: JornadaActivaValue | null;
+  femenil: JornadaActivaValue | null;
 }> => {
   const activas = await getJornadaActiva();
-  const entries = Object.values(activas).filter(Boolean);
-  const pick =
-    entries.find((j) => j.activo === true) ?? entries[0];
+  return {
+    varonil: pickJornadaActivaPorRama(activas, "varonil"),
+    femenil: pickJornadaActivaPorRama(activas, "femenil"),
+  };
+};
+
+/** Resuelve la jornada activa RTDB de la rama indicada. */
+export const resolveJornadaActiva = async (
+  ramaInput: JornadaRama | string = "varonil",
+): Promise<{
+  jornadaNumero: number;
+  fecha: string;
+  rama: JornadaRama;
+  detalle: JornadaActivaValue;
+}> => {
+  const rama = normalizeRama(ramaInput);
+  const activas = await getJornadaActiva();
+  const pick = pickJornadaActivaPorRama(activas, rama);
 
   if (!pick || pick.jornada == null || !pick.fecha) {
     throw new ApiError(
@@ -76,43 +131,52 @@ export const resolveJornadaPrimaria = async (): Promise<{
   return {
     jornadaNumero: Number(pick.jornada),
     fecha: normalizeFechaJornada(String(pick.fecha)),
-    detalle: pick,
+    rama,
+    detalle: { ...pick, rama },
   };
 };
 
-const JORNADA_ID_RE = /^(\d{4}-\d{2}-\d{2})__J(\d+)$/;
+/** @deprecated Preferir resolveJornadaActiva(rama). Alias varonil. */
+export const resolveJornadaPrimaria = async (): Promise<{
+  jornadaNumero: number;
+  fecha: string;
+  detalle: JornadaActivaValue;
+}> => {
+  const result = await resolveJornadaActiva("varonil");
+  return {
+    jornadaNumero: result.jornadaNumero,
+    fecha: result.fecha,
+    detalle: result.detalle,
+  };
+};
 
 export interface JornadaDisponible {
   jornadaId: string;
   fecha: string;
   numero: number;
+  rama: JornadaRama;
   etiqueta: string;
 }
 
-const formatEtiquetaJornada = (fecha: string, numero: number) => {
+export const formatEtiquetaJornada = (
+  fecha: string,
+  numero: number,
+  rama: JornadaRama = "varonil",
+) => {
   const [y, m, d] = fecha.split("-");
-  return `Jornada ${numero} · ${d}/${m}/${y}`;
+  const ramaLabel = rama === "femenil" ? "Femenil" : "Varonil";
+  return `Jornada ${numero} · ${d}/${m}/${y} · ${ramaLabel}`;
 };
 
-/** Parsea `2026-07-10__J1` → fecha + número de jornada. */
-export const parseJornadaId = (
-  jornadaId: string,
-): { fecha: string; numero: number } => {
-  const match = jornadaId.trim().match(JORNADA_ID_RE);
-  if (!match) {
-    throw new ApiError(400, "jornadaId inválido", true, "INVALID_JORNADA_ID");
-  }
-  return { fecha: match[1], numero: Number(match[2]) };
-};
-
-/** Jornadas con inventarios registrados (histórico consultable en cortes). */
+/** Jornadas con inventarios registrados (histórico: abiertos y cerrados). */
 export const listJornadasDisponibles = async (filters?: {
   concesionId?: string;
   sucursalId?: string;
+  rama?: JornadaRama;
 }): Promise<JornadaDisponible[]> => {
-  let query: FirebaseFirestore.Query = firestorePos
-    .collection(COLLECTIONS.INVENTARIOS)
-    .where("activo", "==", true);
+  let query: FirebaseFirestore.Query = firestorePos.collection(
+    COLLECTIONS.INVENTARIOS,
+  );
 
   if (filters?.concesionId) {
     query = query.where("concesion_id", "==", filters.concesionId);
@@ -127,7 +191,33 @@ export const listJornadasDisponibles = async (filters?: {
     );
   }
 
-  const byJornada = new Map<string, { fecha: string; numero: number }>();
+  if (filters?.rama) {
+    const ramaFilter = normalizeRama(filters.rama);
+    inventarios = inventarios.filter(
+      (inv) => normalizeRama(inv.rama as string | undefined) === ramaFilter,
+    );
+  }
+
+  // Activas RTDB: inferir rama en inventarios legacy y asegurar que aparezcan.
+  const activasPorClave = new Map<string, JornadaRama>();
+  try {
+    const porRama = await getJornadasActivasPorRama();
+    for (const rama of ["varonil", "femenil"] as const) {
+      const j = porRama[rama];
+      if (!j?.fecha || j.jornada == null) continue;
+      const fecha = normalizeFecha(String(j.fecha));
+      activasPorClave.set(`${fecha}__${Number(j.jornada)}`, rama);
+    }
+  } catch {
+    // Si RTDB no está disponible, seguimos solo con inventarios.
+  }
+
+  const byJornada = new Map<
+    string,
+    { fecha: string; numero: number; rama: JornadaRama }
+  >();
+  /** jornadaIds que vienen de al menos un inventario con `rama` explícita. */
+  const explicitRamaIds = new Set<string>();
 
   for (const inv of inventarios) {
     const fechaRaw = String(inv.jornada_fecha ?? "");
@@ -135,66 +225,134 @@ export const listJornadasDisponibles = async (filters?: {
     if (!fechaRaw || !numero) continue;
 
     const fecha = normalizeFecha(fechaRaw);
-    const jornadaId = buildJornadaId(fecha, numero);
-    byJornada.set(jornadaId, { fecha, numero });
+    const clave = `${fecha}__${numero}`;
+    const rawRama = inv.rama;
+    const hasExplicit =
+      rawRama === "femenil" || rawRama === "varonil";
+    const rama: JornadaRama = hasExplicit
+      ? normalizeRama(rawRama as string)
+      : (activasPorClave.get(clave) ?? "varonil");
+
+    const jornadaId = buildJornadaId(fecha, numero, rama);
+    byJornada.set(jornadaId, { fecha, numero, rama });
+    if (hasExplicit) explicitRamaIds.add(jornadaId);
+  }
+
+  // Incluir jornadas activas aunque aún no tengan inventarios.
+  for (const [clave, rama] of activasPorClave.entries()) {
+    const [fecha, numStr] = clave.split("__");
+    const numero = Number(numStr);
+    if (!fecha || !numero) continue;
+    if (filters?.rama && normalizeRama(filters.rama) !== rama) continue;
+    const jornadaId = buildJornadaId(fecha, numero, rama);
+    if (!byJornada.has(jornadaId)) {
+      byJornada.set(jornadaId, { fecha, numero, rama });
+    }
+  }
+
+  // Quitar "varonil" fantasma: misma fecha/número que una femenil, sin rama explícita.
+  for (const [id, data] of [...byJornada.entries()]) {
+    if (data.rama !== "varonil") continue;
+    const femenilId = buildJornadaId(data.fecha, data.numero, "femenil");
+    if (!byJornada.has(femenilId)) continue;
+    if (!explicitRamaIds.has(id)) {
+      byJornada.delete(id);
+    }
   }
 
   return Array.from(byJornada.entries())
-    .map(([jornadaId, { fecha, numero }]) => ({
+    .map(([jornadaId, { fecha, numero, rama }]) => ({
       jornadaId,
       fecha,
       numero,
-      etiqueta: formatEtiquetaJornada(fecha, numero),
+      rama,
+      etiqueta: formatEtiquetaJornada(fecha, numero, rama),
     }))
     .sort(
       (a, b) =>
-        b.fecha.localeCompare(a.fecha) || b.numero - a.numero,
+        b.fecha.localeCompare(a.fecha) ||
+        b.numero - a.numero ||
+        a.rama.localeCompare(b.rama),
     );
 };
 
-/** Resuelve jornada para reportes: prioriza jornadaId explícito, luego inventarios, luego RTDB activa. */
+/** Resuelve jornada para reportes: prioriza jornadaId explícito, luego inventarios, luego RTDB. */
 export const resolveJornadaParaReporte = async (params: {
   jornadaId?: string;
   fecha?: string;
   jornadaNumero?: number;
+  rama?: JornadaRama | string;
   concesionId?: string;
   sucursalId?: string;
-}): Promise<{ fecha: string; numero: number; jornadaId: string }> => {
+}): Promise<{
+  fecha: string;
+  numero: number;
+  rama: JornadaRama;
+  jornadaId: string;
+}> => {
   if (params.jornadaId) {
     const parsed = parseJornadaId(params.jornadaId);
     return {
       ...parsed,
-      jornadaId: buildJornadaId(parsed.fecha, parsed.numero),
+      jornadaId: buildJornadaId(parsed.fecha, parsed.numero, parsed.rama),
     };
   }
 
   if (params.fecha && params.jornadaNumero != null) {
     const fecha = normalizeFecha(params.fecha);
     const numero = Number(params.jornadaNumero);
+    const rama = normalizeRama(params.rama);
     return {
       fecha,
       numero,
-      jornadaId: buildJornadaId(fecha, numero),
+      rama,
+      jornadaId: buildJornadaId(fecha, numero, rama),
     };
   }
 
   const disponibles = await listJornadasDisponibles({
     concesionId: params.concesionId,
     sucursalId: params.sucursalId,
+    rama: params.rama ? normalizeRama(params.rama) : undefined,
   });
   if (disponibles.length > 0) {
     const pick = disponibles[0];
     return {
       fecha: pick.fecha,
       numero: pick.numero,
+      rama: pick.rama,
       jornadaId: pick.jornadaId,
     };
   }
 
-  const primaria = await resolveJornadaPrimaria();
-  return {
-    fecha: primaria.fecha,
-    numero: primaria.jornadaNumero,
-    jornadaId: buildJornadaId(primaria.fecha, primaria.jornadaNumero),
-  };
+  const rama = normalizeRama(params.rama);
+  try {
+    const activa = await resolveJornadaActiva(rama);
+    return {
+      fecha: activa.fecha,
+      numero: activa.jornadaNumero,
+      rama: activa.rama,
+      jornadaId: buildJornadaId(activa.fecha, activa.jornadaNumero, activa.rama),
+    };
+  } catch {
+    if (rama === "varonil") {
+      const femenil = await resolveJornadaActiva("femenil");
+      return {
+        fecha: femenil.fecha,
+        numero: femenil.jornadaNumero,
+        rama: femenil.rama,
+        jornadaId: buildJornadaId(
+          femenil.fecha,
+          femenil.jornadaNumero,
+          femenil.rama,
+        ),
+      };
+    }
+    throw new ApiError(
+      400,
+      "No hay jornada activa configurada",
+      true,
+      "JORNADA_NO_ACTIVA",
+    );
+  }
 };

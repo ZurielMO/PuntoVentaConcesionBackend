@@ -550,12 +550,51 @@ describe("aggregateProductoReporteFromVentas", () => {
       ventasAbonado: 270,
       puntosCanjeados: 90,
       ventasTotales: 790,
+      ventaPalcos: 0,
     });
 
     const totales = buildReporteProductoTotales([cerveza!]);
     expect(totales.ventasTotales).toBe(790);
     expect(totales.puntosCanjeados).toBe(90);
     expect(totales.dineroReal).toBe(700);
+    expect(totales.ventaPalcos).toBe(0);
+  });
+
+  it("suma ventaPalcos por producto sin excluirlo de ventasTotales", () => {
+    const byProduct = aggregateProductoReporteFromVentas([
+      {
+        total: 260,
+        metodoPago: "efectivo",
+        montoEfectivo: 260,
+        cajaNombre: "Barra 1",
+        detalle: [
+          { producto: "vaso", cantidad: 2, precio_actual: 130, subtotal: 260 },
+        ],
+      },
+      {
+        total: 390,
+        metodoPago: "tarjeta",
+        montoTarjeta: 390,
+        cajaNombre: "VIP",
+        cajeroNombre: "VIP Stripe",
+        ventaId: "vip_abc123",
+        detalle: [
+          { producto: "vaso", cantidad: 3, precio_actual: 130, subtotal: 390 },
+        ],
+      },
+    ]);
+
+    const vaso = byProduct.get("vaso");
+    expect(vaso).toMatchObject({
+      cantidadRegular: 5,
+      ventasRegular: 650,
+      ventasTotales: 650,
+      ventaPalcos: 390,
+    });
+
+    const totales = buildReporteProductoTotales([vaso!]);
+    expect(totales.ventaPalcos).toBe(390);
+    expect(totales.ventasTotales).toBe(650);
   });
 });
 

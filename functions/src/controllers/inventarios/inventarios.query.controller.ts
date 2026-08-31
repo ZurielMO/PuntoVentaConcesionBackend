@@ -66,10 +66,14 @@ export const getInventarios = asyncHandler(async (req: Request, res: Response) =
 export const getInventarioJornadaActiva = asyncHandler(
   async (req: Request, res: Response) => {
     const sucursalId = await resolveSucursalId(req);
+    const ramaRaw = req.query.rama as string | undefined;
+    const rama =
+      ramaRaw === "femenil" || ramaRaw === "varonil" ? ramaRaw : "varonil";
 
     const { inventario, jornada } = await inventarioService.getInventarioJornadaActiva(
       sucursalId,
       wantsProductos(req),
+      rama,
     );
 
     res.status(200).json({

@@ -12,7 +12,12 @@ import * as concessionService from "./concession.service";
 import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import { resolveJornadaParaReporte } from "./jornada.service";
+import {
+  normalizeRama,
+  type JornadaRama,
+} from "./asignacion-caja.service";
 import type { ConcessionTipo } from "../models";
+import { isVentaPalcos } from "../utils/venta-palcos.util";
 
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 const productosCol = (inventarioId: string) =>
@@ -30,6 +35,8 @@ export interface ReporteProductoRow {
   cortesias: number;
   puntosCanjeados: number;
   ventasTotales: number;
+  /** Parte de ventasTotales originada en VIP / VIP Stripe (palcos). */
+  ventaPalcos: number;
   /** Precio de lista actual del catálogo */
   precioActual: number;
   /** Descuento unitario abonado (precio lista − precio abonado efectivo) */
@@ -50,7 +57,11 @@ export interface ReporteConcesionRow {
   concesionId: string;
   nombre: string;
   porcentajeComision: number;
+  /** Incluye POS + palcos (efectivo + tarjeta). */
   totalVenta: number;
+  /** Parte de totalVenta originada en VIP / VIP Stripe (palcos). */
+  ventaPalcos: number;
+  cantidadVentasPalcos: number;
   comision: number;
   gananciaConcesion: number;
 }
@@ -62,7 +73,12 @@ export interface ReporteConcesionInfo {
 }
 
 export interface ReporteCortes {
-  jornada: { fecha: string; numero: number; jornadaId: string };
+  jornada: {
+    fecha: string;
+    numero: number;
+    jornadaId: string;
+    rama?: JornadaRama;
+  };
   /** Concesión del reporte; null en el consolidado de todas las concesiones. */
   concesion: ReporteConcesionInfo | null;
   productos: ReporteProductoRow[] | null;
@@ -90,6 +106,7 @@ const loadInventariosJornada = async (
   concesionId: string,
   fecha: string,
   jornadaNumero: number,
+  rama: JornadaRama = "varonil",
   sucursalId?: string,
 ) => {
   let query: FirebaseFirestore.Query = inventariosCol()
@@ -102,6 +119,11 @@ const loadInventariosJornada = async (
     id: doc.id,
     ...doc.data(),
   }));
+
+  inventarios = inventarios.filter(
+    (inv) =>
+      normalizeRama((inv as { rama?: string }).rama) === normalizeRama(rama),
+  );
 
   if (sucursalId) {
     inventarios = inventarios.filter(
@@ -155,6 +177,7 @@ const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
   cortesias: 0,
   puntosCanjeados: 0,
   ventasTotales: 0,
+  ventaPalcos: 0,
 });
 
 const isCorteCerrado = (corte: Record<string, unknown>) =>
@@ -263,6 +286,7 @@ const mergeProductoReporteMaps = (
       cortesias: prev.cortesias + row.cortesias,
       puntosCanjeados: roundMoney(prev.puntosCanjeados + row.puntosCanjeados),
       ventasTotales: roundMoney(prev.ventasTotales + row.ventasTotales),
+      ventaPalcos: roundMoney(prev.ventaPalcos + row.ventaPalcos),
     });
   }
 
@@ -313,6 +337,7 @@ const buildProductosReporte = async (
       cortesias: number;
       puntosCanjeados: number;
       ventasTotales: number;
+      ventaPalcos: number;
     }
   >,
 ): Promise<ReporteProductoRow[]> => {
@@ -351,6 +376,7 @@ const buildProductosReporte = async (
       cortesias: ventas?.cortesias ?? 0,
       puntosCanjeados: ventas?.puntosCanjeados ?? 0,
       ventasTotales: ventas?.ventasTotales ?? 0,
+      ventaPalcos: ventas?.ventaPalcos ?? 0,
       precioActual,
       descuentoAbonado,
     });
@@ -373,6 +399,13 @@ const buildResumenConcesion = (
 ): ReporteConcesionRow => {
   const { totalEfectivo, totalTarjeta } = aggregateTotalsByMetodoPago(ventas);
   const totalVenta = roundMoney(totalEfectivo + totalTarjeta);
+
+  const ventasPalcos = ventas.filter(isVentaPalcos);
+  const palcosMontos = aggregateTotalsByMetodoPago(ventasPalcos);
+  const ventaPalcos = roundMoney(
+    palcosMontos.totalEfectivo + palcosMontos.totalTarjeta,
+  );
+
   const porcentajeComision = Number(concesion.porcentajeComision ?? 0);
   const comision = roundMoney((totalVenta * porcentajeComision) / 100);
   const gananciaConcesion = roundMoney(totalVenta - comision);
@@ -382,6 +415,8 @@ const buildResumenConcesion = (
     nombre: String(concesion.nombre ?? concesion.id),
     porcentajeComision,
     totalVenta,
+    ventaPalcos,
+    cantidadVentasPalcos: ventasPalcos.length,
     comision,
     gananciaConcesion,
   };
@@ -411,7 +446,12 @@ const buildIngresosFromVentas = (
 
 const buildReporteForConcesion = async (
   concesion: Record<string, unknown> & { id: string },
-  jornada: { fecha: string; numero: number; jornadaId: string },
+  jornada: {
+    fecha: string;
+    numero: number;
+    jornadaId: string;
+    rama: JornadaRama;
+  },
   sucursalId?: string,
   includeDetalle = false,
 ): Promise<{
@@ -424,6 +464,7 @@ const buildReporteForConcesion = async (
     concesion.id,
     jornada.fecha,
     jornada.numero,
+    jornada.rama,
     sucursalId,
   );
   const inventarioIds = new Set(inventarios.map((inv) => inv.id));
@@ -492,6 +533,7 @@ const buildReporteForConcesion = async (
       cortesias: p.cortesias,
       puntosCanjeados: p.puntosCanjeados,
       ventasTotales: p.ventasTotales,
+      ventaPalcos: p.ventaPalcos,
     })),
   );
 
@@ -518,6 +560,7 @@ export const buildReporteCortes = async (
     fecha: resolved.fecha,
     numero: resolved.numero,
     jornadaId: resolved.jornadaId,
+    rama: resolved.rama,
   };
 
   if (filters.concesionId) {

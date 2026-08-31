@@ -26,8 +26,18 @@ export const openInventarioJornadaActiva = asyncHandler(
       });
       return;
     }
+    const ramaRaw =
+      (req.body?.rama as string | undefined) ||
+      (req.query.rama as string | undefined);
+    const rama =
+      ramaRaw === "femenil" || ramaRaw === "varonil" ? ramaRaw : "varonil";
+
     const { inventario, jornada } =
-      await inventarioService.getOrCreateInventarioJornadaActiva(sucursalId);
+      await inventarioService.getOrCreateInventarioJornadaActiva(
+        sucursalId,
+        true,
+        rama,
+      );
     res.status(201).json({
       success: true,
       data: { inventario, jornada },

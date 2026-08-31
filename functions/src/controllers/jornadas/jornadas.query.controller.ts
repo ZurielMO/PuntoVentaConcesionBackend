@@ -10,7 +10,8 @@ import {
 export const getJornadaActiva = asyncHandler(
   async (_req: Request, res: Response) => {
     const jornada_activa = await jornadaService.getJornadaActiva();
-    res.status(200).json({ success: true, jornada_activa });
+    const activas = await jornadaService.getJornadasActivasPorRama();
+    res.status(200).json({ success: true, jornada_activa, activas });
   },
 );
 
@@ -28,9 +29,14 @@ export const getJornadasDisponibles = asyncHandler(
       }
     }
 
+    const ramaRaw = req.query.rama as string | undefined;
+    const rama =
+      ramaRaw === "femenil" || ramaRaw === "varonil" ? ramaRaw : undefined;
+
     const data = await jornadaService.listJornadasDisponibles({
       concesionId,
       sucursalId: operational.sucursalId,
+      rama,
     });
     res.status(200).json({ success: true, data });
   },

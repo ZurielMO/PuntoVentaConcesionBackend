@@ -6,13 +6,14 @@ import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import * as comboService from "./combo.service";
 import * as inventarioService from "./inventario.service";
-import { buildJornadaId } from "./asignacion-caja.service";
-import { resolveJornadaPrimaria } from "./jornada.service";
+import { buildJornadaId, ramaFromInventario } from "./asignacion-caja.service";
+import { resolveJornadaActiva } from "./jornada.service";
 import type { OperationalListFilters } from "../utils/list-filters.util";
 import {
   findCorteCerradoHoy,
   todayIsoDate,
 } from "./corte-guard.service";
+import { isVentaPalcos } from "../utils/venta-palcos.util";
 
 const col = () => firestorePos.collection(COLLECTIONS.CORTES);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -496,6 +497,8 @@ export interface ProductoReporteAgg {
   cortesias: number;
   puntosCanjeados: number;
   ventasTotales: number;
+  /** Parte de ventasTotales originada en VIP / VIP Stripe (palcos). */
+  ventaPalcos: number;
 }
 
 const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
@@ -506,6 +509,7 @@ const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
   cortesias: 0,
   puntosCanjeados: 0,
   ventasTotales: 0,
+  ventaPalcos: 0,
 });
 
 /** @internal exported for unit tests */
@@ -516,6 +520,7 @@ export const aggregateProductoReporteFromVentas = (
 
   for (const venta of ventas) {
     const esAbonado = isVentaAbonado(venta);
+    const esPalcos = isVentaPalcos(venta);
     const ventaTotal = Number(venta.total ?? 0);
     const montoPuntos = Number(venta.montoPuntos ?? 0);
 
@@ -551,6 +556,9 @@ export const aggregateProductoReporteFromVentas = (
       }
 
       prev.ventasTotales = roundMoney(prev.ventasTotales + subtotal);
+      if (esPalcos) {
+        prev.ventaPalcos = roundMoney(prev.ventaPalcos + subtotal);
+      }
 
       if (montoPuntos > 0 && ventaTotal > 0) {
         prev.puntosCanjeados = roundMoney(
@@ -573,6 +581,7 @@ export interface ReporteProductoTotalesRow {
   cortesias: number;
   puntosCanjeados: number;
   ventasTotales: number;
+  ventaPalcos: number;
   dineroReal: number;
 }
 
@@ -589,6 +598,7 @@ export const buildReporteProductoTotales = (
       cortesias: acc.cortesias + row.cortesias,
       puntosCanjeados: roundMoney(acc.puntosCanjeados + row.puntosCanjeados),
       ventasTotales: roundMoney(acc.ventasTotales + row.ventasTotales),
+      ventaPalcos: roundMoney(acc.ventaPalcos + row.ventaPalcos),
     }),
     emptyProductoReporteAgg(),
   );
@@ -1129,6 +1139,7 @@ export const cerrarCortePorConteo = async (
   const jornadaId = buildJornadaId(
     String(inv.jornada_fecha ?? ""),
     Number(inv.jornada_numero ?? 0),
+    ramaFromInventario(inv),
   );
 
   return createCorte(
@@ -1207,14 +1218,24 @@ export const cerrarCorte = async (
       jornadaId = buildJornadaId(
         String(inv.jornada_fecha ?? ""),
         Number(inv.jornada_numero ?? 0),
+        ramaFromInventario(inv),
       );
     }
   } else {
     try {
-      const primaria = await resolveJornadaPrimaria();
-      jornadaId = buildJornadaId(primaria.fecha, primaria.jornadaNumero);
+      const activa = await resolveJornadaActiva("varonil");
+      jornadaId = buildJornadaId(activa.fecha, activa.jornadaNumero, activa.rama);
     } catch {
-      jornadaId = null;
+      try {
+        const femenil = await resolveJornadaActiva("femenil");
+        jornadaId = buildJornadaId(
+          femenil.fecha,
+          femenil.jornadaNumero,
+          femenil.rama,
+        );
+      } catch {
+        jornadaId = null;
+      }
     }
   }
 
