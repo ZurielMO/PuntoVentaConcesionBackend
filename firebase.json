@@ -3,6 +3,7 @@
     "rules": "storage.rules"
   },
   "firestore": {
+    "database": "concesiones",
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },

@@ -17,6 +17,124 @@
         { "fieldPath": "vendedorUid", "order": "ASCENDING" },
         { "fieldPath": "activo", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "vip_product_config",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "concessionId", "order": "ASCENDING" },
+        { "fieldPath": "enabled", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "fecha", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "fecha", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "inventarios",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sucursal_id", "order": "ASCENDING" },
+        { "fieldPath": "jornada_fecha", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "inventarios",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sucursal_id", "order": "ASCENDING" },
+        { "fieldPath": "jornada_fecha", "order": "ASCENDING" },
+        { "fieldPath": "activo", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "runnerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "concessionIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sucursalIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sucursalIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "jornadaId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "runnerId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "concessionIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vip_reservations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

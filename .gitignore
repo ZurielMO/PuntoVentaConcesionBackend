@@ -20,6 +20,10 @@ firebase-debug.log*
 firestore-debug.log*
 ui-debug.log*
 
+# Local agent artifacts and downloaded installers
+.atl/
+*-setup.exe
+
 
 
 serviceAccountAppOficial.json

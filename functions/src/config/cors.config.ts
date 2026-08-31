@@ -1,6 +1,8 @@
 const DEFAULT_CORS_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:3001",
+  "http://localhost:9002",
+  "http://127.0.0.1:9002",
   "https://concesiones.clubleon.mx",
   "http://concesiones.clubleon.mx",
   "https://foodmarket.clubleon.mx",

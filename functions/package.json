@@ -19,6 +19,7 @@
     "logs": "firebase functions:log",
     "migrate:users-app-oficial": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts",
     "migrate:users-app-oficial:promote": "ts-node --transpile-only scripts/migrate-users-to-app-oficial.ts --promote-conflicts",
+    "migrate:vip-orders": "ts-node --transpile-only scripts/migrate-vip-orders.ts",
     "cinepolis:ensure-cashier": "ts-node --transpile-only scripts/ensure-cinepolis-cashier.ts"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "morgan": "^1.10.0",
     "multer": "^2.2.0",
     "puntoventa-back": "file:..",
+    "stripe": "^20.3.1",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^9.0.1",
