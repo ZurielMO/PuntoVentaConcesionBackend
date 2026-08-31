@@ -240,6 +240,20 @@ const isOpenInventoryHeader = (data?: DocData | null): boolean =>
   Boolean(data) && data?.activo === true;
 
 /**
+ * Tras jornadas varonil/femenil en paralelo, una sucursal puede tener más de un
+ * header `activo=true`. Preferimos el de la fecha operativa VIP; si no hay, el más nuevo.
+ */
+const pickPreferredOpenInventory = (
+  docs: FirebaseFirestore.QueryDocumentSnapshot[],
+): FirebaseFirestore.QueryDocumentSnapshot | null => {
+  const open = docs.filter((doc) => isOpenInventoryHeader(doc.data()));
+  if (!open.length) return null;
+  const businessDate = getVipBusinessDate();
+  const sameDate = open.filter((doc) => toIsoBusinessDate(doc.data()?.jornada_fecha) === businessDate);
+  return pickNewestInventory(sameDate.length ? sameDate : open);
+};
+
+/**
  * Inventario POS de la sucursal sin depender de RTDB `jornada_activa`.
  * Solo headers abiertos (`activo=true`). `jornada_fecha` es la fecha del partido,
  * no el día calendario: al cambiar de jornada el POS cierra el header anterior.
@@ -251,7 +265,7 @@ const findInventoryForSucursal = async (
     .where("sucursal_id", "==", sucursalId)
     .limit(50)
     .get();
-  return pickNewestInventory(snap.docs.filter((doc) => isOpenInventoryHeader(doc.data())));
+  return pickPreferredOpenInventory(snap.docs);
 };
 
 const pickStockSource = async (
@@ -1450,7 +1464,7 @@ const newestOpenInventoryBySucursal = (
   }
   const newest = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
   for (const [sucursalId, list] of bySucursal) {
-    const picked = pickNewestInventory(list);
+    const picked = pickPreferredOpenInventory(list);
     if (picked) newest.set(sucursalId, picked);
   }
   return newest;

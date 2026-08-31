@@ -19,6 +19,12 @@ export const COLLECTIONS = {
   DESCUENTOS: "descuentos",
   ABONADO_BENEFICIOS_CONSUMIDOS: "abonado_beneficios_consumidos",
   CINEPOLIS_ASIGNACIONES: "cinepolis_asignaciones",
+  /**
+   * Acumulaciones de puntos que no alcanzaron el ledger de Club León y esperan
+   * reproceso. Vive en la base del POS a propósito: debe poder escribirse
+   * aunque la integración con app-oficial esté caída.
+   */
+  LOYALTY_OPERACIONES_PENDIENTES: "loyalty_operaciones_pendientes",
   VIP_ORDERS: "vip_orders",
   VIP_CONCESSION_CONFIG: "vip_concession_config",
   VIP_PRODUCT_CONFIG: "vip_product_config",

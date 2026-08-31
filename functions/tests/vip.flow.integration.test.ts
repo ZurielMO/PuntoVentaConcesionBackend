@@ -898,6 +898,32 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     expect(mockRows.get("inventarios/inv-2/productos/p1")?.cantidad_final).toBe(20);
   });
 
+  it("prefers today's open inventory over a newer leftover header from another match", async () => {
+    const { getVipBusinessDate } = await import("../src/config/vip.config");
+    const today = getVipBusinessDate();
+    mockRows.set("inventarios/inv-1", {
+      activo: true,
+      sucursal_id: "s1",
+      jornada_fecha: today,
+      jornada_numero: 2,
+      updatedAt: Timestamp.fromMillis(Date.now() - 60_000),
+    });
+    mockRows.set("inventarios/inv-fem", {
+      activo: true,
+      sucursal_id: "s1",
+      rama: "femenil",
+      jornada_fecha: "2026-08-20",
+      jornada_numero: 6,
+      updatedAt: Timestamp.fromMillis(Date.now()),
+    });
+    mockRows.set("inventarios/inv-fem/productos/p1", { cantidad_final: 99, precio_jornada: 50 });
+    const { createCheckout } = await import("../src/services/vip/vip.service");
+    const checkout = await createCheckout(checkoutInput(), "checkout-rama-date");
+    expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
+    expect(mockRows.get("inventarios/inv-fem/productos/p1")?.cantidad_final).toBe(99);
+    expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.items[0]).toMatchObject({ inventoryId: "inv-1" });
+  });
+
   it("rejects checkout without a valid floor for the selected zone", async () => {
     const { createCheckout } = await import("../src/services/vip/vip.service");
     const input = checkoutInput();

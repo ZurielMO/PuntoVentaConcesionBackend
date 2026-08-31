@@ -65,6 +65,8 @@ export const apiV2 = onRequest(
       brevoApiKey,
       brevoSenderEmail,
       brevoSenderName,
+      backendClAuthEmail,
+      backendClAuthPassword,
     ],
   },
   (req, res) => {
