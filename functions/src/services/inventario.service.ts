@@ -5,8 +5,13 @@ import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import { InventarioMovimientoTipo } from "../models";
 import {
+  normalizeRama,
+  ramaFromInventario,
+  type JornadaRama,
+} from "./asignacion-caja.service";
+import {
   JornadaActivaValue,
-  resolveJornadaPrimaria,
+  resolveJornadaActiva,
 } from "./jornada.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -34,12 +39,23 @@ export const normalizeFecha = (fecha: string): string => {
   );
 };
 
-/** ID compuesto por sucursal: `2026-03-14__J11__sucursalId`. */
+/**
+ * ID compuesto por sucursal.
+ * Varonil: `2026-03-14__J11__sucursalId`
+ * Femenil: `2026-03-14__J11__femenil__sucursalId`
+ */
 export const buildInventarioId = (
   fecha: string,
   jornadaNumero: string | number,
   sucursalId: string,
-): string => `${normalizeFecha(fecha)}__J${jornadaNumero}__${sucursalId}`;
+  rama: JornadaRama | string | null | undefined = "varonil",
+): string => {
+  const r = normalizeRama(rama);
+  const base = `${normalizeFecha(fecha)}__J${jornadaNumero}`;
+  return r === "femenil"
+    ? `${base}__femenil__${sucursalId}`
+    : `${base}__${sucursalId}`;
+};
 
 const productosCol = (inventarioId: string) =>
   col().doc(inventarioId).collection(SUBCOLLECTIONS.PRODUCTOS);
@@ -101,10 +117,12 @@ export const createInventarioPorSucursal = async (
   jornadaNumero: string | number,
   fechaJornada: string,
   sucursalId: string,
+  ramaInput: JornadaRama | string | null | undefined = "varonil",
 ) => {
+  const rama = normalizeRama(ramaInput);
   const sucursal = await getSucursalOrThrow(sucursalId);
   const fecha = normalizeFecha(fechaJornada);
-  const id = buildInventarioId(fecha, jornadaNumero, sucursalId);
+  const id = buildInventarioId(fecha, jornadaNumero, sucursalId, rama);
   const ref = col().doc(id);
 
   const existing = await ref.get();
@@ -118,6 +136,7 @@ export const createInventarioPorSucursal = async (
     jornada_numero: Number(jornadaNumero),
     sucursal_id: sucursalId,
     concesion_id: sucursal.concesionId,
+    rama,
     activo: true,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -133,9 +152,11 @@ const matchesJornadaActiva = (
   data: FirebaseFirestore.DocumentData,
   fechaActiva: string,
   jornadaNumeroActiva: number,
+  ramaActiva: JornadaRama,
 ): boolean =>
   String(data.jornada_fecha ?? "") === fechaActiva &&
-  Number(data.jornada_numero ?? 0) === jornadaNumeroActiva;
+  Number(data.jornada_numero ?? 0) === jornadaNumeroActiva &&
+  ramaFromInventario(data) === ramaActiva;
 
 /**
  * Cierra un inventario obsoleto: pone cantidad_final = 0 en productos
@@ -190,20 +211,24 @@ export const cerrarInventarioPorCambioJornada = async (
 };
 
 /**
- * Cierra todos los inventarios activos que no coinciden con la jornada primaria.
- * Idempotente: si no hay obsoletos, no hace nada.
+ * Cierra inventarios activos de la misma rama que no coinciden con la jornada activa.
+ * No toca inventarios de la otra rama.
  */
 export const cerrarInventariosObsoletos = async (
   fechaActiva: string,
   jornadaNumeroActiva: string | number,
+  ramaInput: JornadaRama | string | null | undefined = "varonil",
 ) => {
   const fecha = normalizeFecha(fechaActiva);
   const jornadaNumero = Number(jornadaNumeroActiva);
+  const rama = normalizeRama(ramaInput);
   const snap = await col().where("activo", "==", true).get();
 
-  const obsoletos = snap.docs.filter(
-    (doc) => !matchesJornadaActiva(doc.data(), fecha, jornadaNumero),
-  );
+  const obsoletos = snap.docs.filter((doc) => {
+    const data = doc.data();
+    if (ramaFromInventario(data) !== rama) return false;
+    return !matchesJornadaActiva(data, fecha, jornadaNumero, rama);
+  });
 
   for (const doc of obsoletos) {
     await cerrarInventarioPorCambioJornada(
@@ -218,13 +243,16 @@ export const cerrarInventariosObsoletos = async (
 export const getOrCreateInventarioJornadaActiva = async (
   sucursalId: string,
   includeProductos = true,
+  ramaInput: JornadaRama | string | null | undefined = "varonil",
 ) => {
-  const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
-  await cerrarInventariosObsoletos(fecha, jornadaNumero);
+  const rama = normalizeRama(ramaInput);
+  const { jornadaNumero, fecha, detalle } = await resolveJornadaActiva(rama);
+  await cerrarInventariosObsoletos(fecha, jornadaNumero, rama);
   const inventario = await createInventarioPorSucursal(
     jornadaNumero,
     fecha,
     sucursalId,
+    rama,
   );
   if (!includeProductos) {
     return { inventario, jornada: detalle };
@@ -251,6 +279,7 @@ const inventarioDocTimestamp = (
 const getInventarioJornadaActivaFromFirestore = async (
   sucursalId: string,
   includeProductos: boolean,
+  rama: JornadaRama,
 ): Promise<{
   inventario: Record<string, unknown> | null;
   jornada: JornadaActivaValue | null;
@@ -260,11 +289,15 @@ const getInventarioJornadaActivaFromFirestore = async (
     .where("activo", "==", true)
     .get();
 
-  if (snap.empty) {
+  const ofRama = snap.docs.filter(
+    (doc) => ramaFromInventario(doc.data()) === rama,
+  );
+
+  if (ofRama.length === 0) {
     return { inventario: null, jornada: null };
   }
 
-  const sorted = snap.docs.sort(
+  const sorted = ofRama.sort(
     (a, b) =>
       inventarioDocTimestamp(b.data()) - inventarioDocTimestamp(a.data()),
   );
@@ -280,6 +313,7 @@ const getInventarioJornadaActivaFromFirestore = async (
     activo: true,
     jornada: data.jornada_numero,
     fecha: data.jornada_fecha,
+    rama,
   };
 
   const inventario = toData(doc);
@@ -300,17 +334,21 @@ const getInventarioJornadaActivaFromFirestore = async (
 export const getInventarioJornadaActiva = async (
   sucursalId: string,
   includeProductos = true,
+  ramaInput: JornadaRama | string | null | undefined = "varonil",
 ) => {
+  const rama = normalizeRama(ramaInput);
+
   if (!isAppOficial2Configured()) {
     return getInventarioJornadaActivaFromFirestore(
       sucursalId,
       includeProductos,
+      rama,
     );
   }
 
-  const { jornadaNumero, fecha, detalle } = await resolveJornadaPrimaria();
-  await cerrarInventariosObsoletos(fecha, jornadaNumero);
-  const id = buildInventarioId(fecha, jornadaNumero, sucursalId);
+  const { jornadaNumero, fecha, detalle } = await resolveJornadaActiva(rama);
+  await cerrarInventariosObsoletos(fecha, jornadaNumero, rama);
+  const id = buildInventarioId(fecha, jornadaNumero, sucursalId, rama);
   const doc = await col().doc(id).get();
 
   if (!doc.exists || doc.data()?.activo === false) {

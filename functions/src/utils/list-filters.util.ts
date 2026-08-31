@@ -3,6 +3,7 @@ import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import {
   buildJornadaId,
+  ramaFromInventario,
   resolveCajaActivaParaVendedor,
 } from "../services/asignacion-caja.service";
 import {
@@ -20,6 +21,7 @@ export type OperationalListFilters = {
   idUser?: string;
   cajaId?: string;
   inventarioId?: string;
+  jornadaId?: string;
 };
 
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -29,6 +31,8 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
   const user = req.user;
   if (!user) return {};
 
+  const jornadaId = req.query.jornadaId as string | undefined;
+
   if (isSuperAdmin(user)) {
     const concesionId = req.query.concesionId as string | undefined;
     return {
@@ -36,6 +40,7 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
       sucursalId: req.query.sucursalId as string | undefined,
       cajaId: req.query.cajaId as string | undefined,
       inventarioId: req.query.inventarioId as string | undefined,
+      jornadaId,
     };
   }
 
@@ -52,6 +57,7 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
         (user.cajaId as string | undefined) ||
         undefined,
       inventarioId: req.query.inventarioId as string | undefined,
+      jornadaId,
     };
   }
 
@@ -61,6 +67,7 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
       sucursalId: getUserSucursalId(user),
       cajaId: req.query.cajaId as string | undefined,
       inventarioId: req.query.inventarioId as string | undefined,
+      jornadaId,
     };
   }
 
@@ -70,10 +77,11 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
       sucursalId: req.query.sucursalId as string | undefined,
       cajaId: req.query.cajaId as string | undefined,
       inventarioId: req.query.inventarioId as string | undefined,
+      jornadaId,
     };
   }
 
-  return { concesionId };
+  return { concesionId, jornadaId };
 };
 
 /** Resuelve caja activa por jornada para vendedores al listar ventas. */
@@ -106,6 +114,7 @@ export const getOperationalListFiltersAsync = async (
   const jornadaId = buildJornadaId(
     String(inv.jornada_fecha ?? ""),
     Number(inv.jornada_numero ?? 0),
+    ramaFromInventario(inv),
   );
 
   const resolved = await resolveCajaActivaParaVendedor({

@@ -5,6 +5,7 @@ import { ApiError } from "../utils/api-error";
 import { logMovimientoInTransaction } from "./inventario.service";
 import {
   buildJornadaId,
+  ramaFromInventario,
   resolveCajaActivaParaVendedor,
 } from "./asignacion-caja.service";
 import { getUserById } from "./user.service";
@@ -300,6 +301,7 @@ const resolveCajaForVenta = async (params: {
   const jornadaId = buildJornadaId(
     String(inv.jornada_fecha ?? ""),
     Number(inv.jornada_numero ?? 0),
+    ramaFromInventario(inv),
   );
 
   let fallbackCajaId: string | null = null;
@@ -769,6 +771,7 @@ export type DetalleVentaListFilters = {
   idUser?: string;
   cajaId?: string;
   inventarioId?: string;
+  jornadaId?: string;
 };
 
 /** @internal exported for unit tests */
@@ -790,6 +793,9 @@ export const filterComprobantesByListFilters = <T extends Record<string, unknown
   if (filters.idUser) {
     filtered = filtered.filter((r) => r.idUser === filters.idUser);
   }
+  if (filters.jornadaId) {
+    filtered = filtered.filter((r) => r.jornadaId === filters.jornadaId);
+  }
 
   return filtered;
 };
@@ -798,6 +804,8 @@ export const listDetalleVentas = async (filters: DetalleVentaListFilters) => {
   let query: FirebaseFirestore.Query = col();
   if (filters.concesionId) {
     query = query.where("concesionId", "==", filters.concesionId);
+  } else if (filters.jornadaId) {
+    query = query.where("jornadaId", "==", filters.jornadaId);
   } else if (filters.inventarioId) {
     query = query.where("inventarioId", "==", filters.inventarioId);
   }

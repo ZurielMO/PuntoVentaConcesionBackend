@@ -13,7 +13,7 @@ import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
 import { getDescuentoById, listDescuentos } from "./descuento.service";
 import { buildJornadaId } from "./asignacion-caja.service";
-import { resolveJornadaPrimaria } from "./jornada.service";
+import { resolveJornadaActiva } from "./jornada.service";
 import { ApiError } from "../utils/api-error";
 
 type SeasonPassVerification = {
@@ -134,8 +134,13 @@ const buildConsumoId = (
 ) => `${jornadaId}__${memberId}__${benefitId}`;
 
 const resolveJornadaIdActiva = async (): Promise<string> => {
-  const { jornadaNumero, fecha } = await resolveJornadaPrimaria();
-  return buildJornadaId(fecha, jornadaNumero);
+  try {
+    const { jornadaNumero, fecha, rama } = await resolveJornadaActiva("varonil");
+    return buildJornadaId(fecha, jornadaNumero, rama);
+  } catch {
+    const { jornadaNumero, fecha, rama } = await resolveJornadaActiva("femenil");
+    return buildJornadaId(fecha, jornadaNumero, rama);
+  }
 };
 
 /**

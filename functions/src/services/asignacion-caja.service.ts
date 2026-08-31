@@ -12,8 +12,48 @@ const toData = (doc: FirebaseFirestore.DocumentSnapshot) => ({
   ...doc.data(),
 });
 
-export const buildJornadaId = (fecha: string, jornadaNumero: number | string) =>
-  `${fecha}__J${jornadaNumero}`;
+export type JornadaRama = "varonil" | "femenil";
+
+export const normalizeRama = (rama?: string | null): JornadaRama =>
+  rama === "femenil" ? "femenil" : "varonil";
+
+/** Varonil: `2026-09-07__J6`. Femenil: `2026-09-07__J6__femenil`. */
+export const buildJornadaId = (
+  fecha: string,
+  jornadaNumero: number | string,
+  rama: JornadaRama | string | null | undefined = "varonil",
+) => {
+  const r = normalizeRama(rama);
+  return r === "femenil"
+    ? `${fecha}__J${jornadaNumero}__femenil`
+    : `${fecha}__J${jornadaNumero}`;
+};
+
+const JORNADA_ID_RE = /^(\d{4}-\d{2}-\d{2})__J(\d+)(?:__(femenil))?$/;
+
+/** Parsea `2026-07-10__J1` o `2026-07-10__J1__femenil`. */
+export const parseJornadaId = (
+  jornadaId: string,
+): { fecha: string; numero: number; rama: JornadaRama } => {
+  const match = jornadaId.trim().match(JORNADA_ID_RE);
+  if (!match) {
+    throw new ApiError(400, "jornadaId inválido", true, "INVALID_JORNADA_ID");
+  }
+  return {
+    fecha: match[1],
+    numero: Number(match[2]),
+    rama: match[3] === "femenil" ? "femenil" : "varonil",
+  };
+};
+
+export const ramaFromInventario = (
+  data: { rama?: unknown } | Record<string, unknown> | null | undefined,
+): JornadaRama =>
+  normalizeRama(
+    data && typeof data === "object" && "rama" in data
+      ? (data.rama as string | undefined)
+      : undefined,
+  );
 
 export const listAsignacionesCajas = async (params: {
   jornadaId: string;

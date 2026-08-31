@@ -89,6 +89,9 @@ describe("cinepolis-puntos.service", () => {
       puntosActuales: 45,
       descripcion: "Combo palomitas",
       externalResponse: {},
+      status: "APPLIED",
+      alreadyProcessed: false,
+      externalTransactionId: "pos-sale:CP-TEST",
     });
 
     const result = await assignCinepolisPoints({
