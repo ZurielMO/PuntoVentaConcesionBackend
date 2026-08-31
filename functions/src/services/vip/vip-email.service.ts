@@ -1,4 +1,4 @@
-import { sendBrevoEmail } from "../../lib/brevo/client";
+import { sendBrevoEmail } from "../../clients/brevo.client";
 import type { VipOrder, VipOrderItemSnapshot } from "../../models/vip.model";
 
 const CLUB_LEON_LOGO_URL =
