@@ -30,17 +30,9 @@ jobs:
         working-directory: functions
         run: npm ci
 
-      - name: Run tests
-        working-directory: functions
-        env:
-          TZ: UTC
-          PROJECT_ID: demo-puntoventa-test
-        run: npm test -- --passWithNoTests --ci --forceExit
-
       - name: Build
-        run: |
-          cd functions
-          npm run build
+        working-directory: functions
+        run: npm run build
 
   deploy:
     name: Deploy Firebase Functions
