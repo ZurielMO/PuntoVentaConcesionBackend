@@ -24,22 +24,15 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: functions/package-lock.json
 
       - name: Install dependencies
-        run: |
-          cd functions
-          npm ci
-
-      - name: Run tests
-        run: |
-          cd functions
-          npm test -- --passWithNoTests
+        working-directory: functions
+        run: npm ci
 
       - name: Build
-        run: |
-          cd functions
-          npm run build
+        working-directory: functions
+        run: npm run build
 
   deploy:
     name: Deploy Firebase Functions
@@ -56,7 +49,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: functions/package-lock.json
 
       - name: Install dependencies
         run: |

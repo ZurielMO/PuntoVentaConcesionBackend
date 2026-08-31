@@ -79,6 +79,9 @@ app.use((req, res, next) => cors(getCorsOptions())(req, res, next));
 app.use(requestContextMiddleware);
 app.use(blockDebugInProduction);
 
+// Stripe exige los bytes exactos. Debe montarse antes de express.json().
+app.use("/vip/webhooks/stripe", express.raw({ type: "application/json", limit: "2mb" }));
+
 app.use(express.json({ limit: "32mb" }));
 app.use(express.urlencoded({ limit: "32mb", extended: true }));
 

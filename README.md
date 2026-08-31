@@ -136,6 +136,78 @@ Swagger UI (solo en desarrollo): `http://localhost:3000/api-docs`
 
 Dentro de `functions/` además: `npm test` (jest), `npm run serve` (emuladores).
 
+## Backend VIP (pedidos a palco)
+
+El API VIP reutiliza las colecciones reales `concesiones`, `products`,
+`sucursales`, `zonas`, `inventarios` y `comprobantes_venta`. No mantiene un
+catálogo ni inventario paralelo. Toda compra usa Stripe Hosted Checkout; solo
+un webhook firmado confirma el pago y registra la venta.
+
+### Configuración obligatoria en Firestore
+
+Los IDs son referencias a documentos reales. El checkout **falla cerrado** si
+falta alguno; este repositorio no incluye IDs ni datos mock de producción.
+
+| Documento | Campos mínimos |
+|---|---|
+| `vip_service_configs/{jornadaId}` | `enabled: true`, `acceptingOrders: true`, `opensAt`/`closesAt` (Timestamp), `maxActiveOrders` (>0), `activeOrderCount` (iniciar en 0), `serviceFeeMinor` (por ejemplo 2000 para $20 MXN) |
+| `vip_concession_config/{concessionIdReal}` | `enabled: true`, `sucursalId` (sucursal real de esa concesión) |
+| `vip_product_config/{productIdReal}` | `enabled: true`, `concessionId` real, `options` y `extras` como arreglos de `{ id, name, price, active }`; opcionalmente `inventoryProductId`/`inventoryQuantity` para complementos que consumen stock |
+| `vip_locations/{locationId}` | `activo: true`, `zonaId` real, `palco` y `nivel` oficiales |
+
+`jornadaId` usa el mismo constructor del POS (`fecha` + número de jornada) y
+debe corresponder a la jornada activa de `acreditaciones-b904f`. El catálogo
+público solo devuelve concesiones/productos reales con configuración VIP
+habilitada.
+
+### Secretos y despliegue
+
+Configura en Firebase Secret Manager:
+
+```bash
+npx firebase-tools functions:secrets:set STRIPE_SECRET_KEY --project puntoventacl
+npx firebase-tools functions:secrets:set STRIPE_WEBHOOK_SECRET --project puntoventacl
+npx firebase-tools functions:secrets:set VIP_TRACKING_SECRET --project puntoventacl
+```
+
+Configura también las URLs no secretas y demás variables documentadas en
+`functions/.env.example`. Registra en Stripe el webhook público
+`POST /vip/webhooks/stripe` para los eventos de Checkout/PaymentIntent. La ruta
+raw se monta antes de `express.json()` para conservar la firma.
+
+Despliega índices antes del piloto:
+
+```bash
+npx firebase-tools deploy --only firestore:indexes --project puntoventacl
+```
+
+Habilita políticas TTL de Firestore sobre `expiresAt` en
+`vip_rate_limits` y `vip_idempotency` para limpiar buckets/claves vencidas. La
+expiración funcional de inventario no depende del TTL: la función programada
+`expireVipReservations` corre cada cinco minutos y libera reservas activas de
+forma transaccional.
+
+El rol existente `CONCESION_SUPERADMIN` (o claims admin existentes) puede ver
+todas las órdenes. `CONCESION_ADMIN` y `CONCESION_ADMIN_CERVECERIA` usan los
+mismos claims actuales y quedan limitados a órdenes que contengan su
+`concesionId`; no se añadieron bypasses ni roles públicos. Roles futuros
+`VIP_OPERATOR`/`VIP_RUNNER` no se aceptan hasta definirlos explícitamente en el
+proveedor de identidad y su alcance.
+
+### Migración segura de pedidos VIP anteriores
+
+El script es de solo lectura por defecto y no inventa datos faltantes:
+
+```bash
+cd functions
+npm run migrate:vip-orders
+# tras revisar los IDs reportados:
+npm run migrate:vip-orders -- --apply
+```
+
+`--apply` únicamente etiqueta documentos legacy para revisión manual. No
+modifica pagos, clientes, ventas ni inventario.
+
 ## Deploy
 
 > Configura primero tu project id (`.firebaserc`) y secretos. Luego:

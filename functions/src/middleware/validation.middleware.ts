@@ -4,7 +4,7 @@ import { ZodError, ZodSchema } from "zod";
 type Target = "body" | "params" | "query";
 
 const buildValidator =
-  (schema: ZodSchema, target: Target) =>
+  (schema: ZodSchema, target: Target, errorCode?: string) =>
   (req: Request, res: Response, next: NextFunction): void => {
     try {
       const parsed = schema.parse(req[target]);
@@ -23,6 +23,7 @@ const buildValidator =
       if (error instanceof ZodError) {
         res.status(400).json({
           success: false,
+          ...(errorCode ? { code: errorCode } : {}),
           message: "Validación fallida",
           errors: error.errors.map((err) => ({
             campo: err.path.join("."),
@@ -36,8 +37,9 @@ const buildValidator =
     }
   };
 
-export const validateBody = (schema: ZodSchema) => buildValidator(schema, "body");
-export const validateParams = (schema: ZodSchema) =>
-  buildValidator(schema, "params");
-export const validateQuery = (schema: ZodSchema) =>
-  buildValidator(schema, "query");
+export const validateBody = (schema: ZodSchema, errorCode?: string) =>
+  buildValidator(schema, "body", errorCode);
+export const validateParams = (schema: ZodSchema, errorCode?: string) =>
+  buildValidator(schema, "params", errorCode);
+export const validateQuery = (schema: ZodSchema, errorCode?: string) =>
+  buildValidator(schema, "query", errorCode);

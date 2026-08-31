@@ -21,6 +21,7 @@ import combosRoutes from "./combos.routes";
 import descuentosRoutes from "./descuentos.routes";
 import trabajadoresClubRoutes from "./trabajadores-club.routes";
 import loyaltyRoutes from "./loyalty.routes";
+import vipRoutes from "./vip.routes";
 import { getBuildInfo } from "../config/build-info";
 
 const router = Router();
@@ -58,5 +59,6 @@ router.use("/combos", combosRoutes);
 router.use("/descuentos", descuentosRoutes);
 router.use("/trabajadores-club", trabajadoresClubRoutes);
 router.use("/loyalty", loyaltyRoutes);
+router.use("/vip", vipRoutes);
 
 export default router;

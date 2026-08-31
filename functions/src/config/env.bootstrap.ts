@@ -9,7 +9,12 @@ export const loadEnvironment = (): void => {
   }
 
   // En Cloud Functions las variables se inyectan por el entorno / Secret Manager.
-  if (process.env.FUNCTION_NAME || process.env.K_SERVICE) {
+  // En Jest no cargar .env.local: CI no lo tiene y los tests deben ser herméticos.
+  if (
+    process.env.FUNCTION_NAME ||
+    process.env.K_SERVICE ||
+    process.env.NODE_ENV === "test"
+  ) {
     envLoaded = true;
     return;
   }

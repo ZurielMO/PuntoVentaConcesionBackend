@@ -25,6 +25,16 @@ export const COLLECTIONS = {
    * aunque la integración con app-oficial esté caída.
    */
   LOYALTY_OPERACIONES_PENDIENTES: "loyalty_operaciones_pendientes",
+  VIP_ORDERS: "vip_orders",
+  VIP_CONCESSION_CONFIG: "vip_concession_config",
+  VIP_PRODUCT_CONFIG: "vip_product_config",
+  VIP_LOCATIONS: "vip_locations",
+  VIP_SERVICE_CONFIGS: "vip_service_configs",
+  VIP_RESERVATIONS: "vip_reservations",
+  VIP_STRIPE_EVENTS: "vip_stripe_events",
+  VIP_IDEMPOTENCY: "vip_idempotency",
+  VIP_REFUND_OPERATIONS: "vip_refund_operations",
+  VIP_RATE_LIMITS: "vip_rate_limits",
 } as const;
 
 // Subcolecciones.
@@ -33,4 +43,5 @@ export const SUBCOLLECTIONS = {
   PRODUCTOS: "productos",
   DETALLE: "detalle",
   MOVIMIENTOS: "movimientos",
+  EVENTS: "events",
 } as const;

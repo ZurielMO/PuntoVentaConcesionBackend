@@ -32,7 +32,15 @@ export const resolveServiceAccountPath = (options: {
   const candidates: string[] = [];
 
   if (options.explicitPath?.trim()) {
-    candidates.push(options.explicitPath.trim());
+    const explicit = options.explicitPath.trim();
+    candidates.push(explicit);
+    if (!path.isAbsolute(explicit)) {
+      candidates.push(path.resolve(process.cwd(), explicit));
+      candidates.push(path.resolve(options.fromDir, explicit));
+      for (const root of getSearchRoots(options.fromDir)) {
+        candidates.push(path.resolve(root, explicit));
+      }
+    }
   }
 
   for (const root of getSearchRoots(options.fromDir)) {

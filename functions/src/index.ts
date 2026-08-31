@@ -21,6 +21,12 @@ import app from "./app";
  *   npx firebase-tools functions:secrets:set SERVICE_ACCOUNT_APP_OFICIAL2 --project puntoventacl --data-file=./acreditaciones-....json
  */
 const serviceAccountAppOficial2 = defineSecret("SERVICE_ACCOUNT_APP_OFICIAL2");
+const stripeSecretKey = defineSecret("STRIPE_SECRET_KEY");
+const stripeWebhookSecret = defineSecret("STRIPE_WEBHOOK_SECRET");
+const vipTrackingSecret = defineSecret("VIP_TRACKING_SECRET");
+const brevoApiKey = defineSecret("BREVO_API_KEY");
+const brevoSenderEmail = defineSecret("BREVO_SENDER_EMAIL");
+const brevoSenderName = defineSecret("BREVO_SENDER_NAME");
 
 /**
  * Credenciales de la cuenta de integración con BackendCL (Club León).
@@ -53,6 +59,12 @@ export const apiV2 = onRequest(
     invoker: "public",
     secrets: [
       serviceAccountAppOficial2,
+      stripeSecretKey,
+      stripeWebhookSecret,
+      vipTrackingSecret,
+      brevoApiKey,
+      brevoSenderEmail,
+      brevoSenderName,
       backendClAuthEmail,
       backendClAuthPassword,
     ],
@@ -61,3 +73,5 @@ export const apiV2 = onRequest(
     app(req, res);
   },
 );
+
+export { expireVipReservations } from "./vip-reservations.cron";
