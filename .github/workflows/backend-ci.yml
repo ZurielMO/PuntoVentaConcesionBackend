@@ -24,17 +24,18 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: functions/package-lock.json
 
       - name: Install dependencies
-        run: |
-          cd functions
-          npm ci
+        working-directory: functions
+        run: npm ci
 
       - name: Run tests
-        run: |
-          cd functions
-          npm test -- --passWithNoTests
+        working-directory: functions
+        env:
+          TZ: UTC
+          PROJECT_ID: demo-puntoventa-test
+        run: npm test -- --passWithNoTests --ci --forceExit
 
       - name: Build
         run: |
@@ -56,7 +57,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: functions/package-lock.json
 
       - name: Install dependencies
         run: |

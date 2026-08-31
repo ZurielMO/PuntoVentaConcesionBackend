@@ -16,7 +16,14 @@ export const firestorePos =
     ? getFirestore(app, databaseId)
     : getFirestore(app);
 
-firestorePos.settings({ ignoreUndefinedProperties: true });
+try {
+  firestorePos.settings({ ignoreUndefinedProperties: true });
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.includes("already been initialized")) {
+    throw error;
+  }
+}
 
 /** Alias para compatibilidad con código existente. */
 export const firestore = firestorePos;

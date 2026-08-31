@@ -1,3 +1,12 @@
+jest.mock("../src/config/firebase", () => ({
+  firestorePos: {
+    collection: jest.fn(() => ({
+      doc: jest.fn(),
+      where: jest.fn(() => ({ limit: jest.fn(() => ({ get: jest.fn() })) })),
+    })),
+  },
+}));
+
 import { Timestamp } from "firebase-admin/firestore";
 import { ApiError } from "../src/utils/api-error";
 import { assertVipCapacity, assertVipServiceOpen } from "../src/services/vip/vip.service";

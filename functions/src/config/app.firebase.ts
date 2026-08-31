@@ -100,7 +100,14 @@ const appOficialServiceAccount = loadServiceAccount();
 const appOficial = getOrCreateApp(appOficialServiceAccount);
 
 export const firestoreApp = getFirestore(appOficial);
-firestoreApp.settings({ ignoreUndefinedProperties: true });
+try {
+  firestoreApp.settings({ ignoreUndefinedProperties: true });
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.includes("already been initialized")) {
+    throw error;
+  }
+}
 
 export const authAppOficial = getAuth(appOficial);
 

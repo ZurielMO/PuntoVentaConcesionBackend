@@ -66,13 +66,16 @@ export const getVipCurrency = (): string =>
   (process.env.STRIPE_CURRENCY || "mxn").trim().toLowerCase();
 
 /** Fecha operativa VIP en America/Mexico_City (YYYY-MM-DD). No usa jornada RTDB. */
-export const getVipBusinessDate = (now = new Date()): string =>
-  new Intl.DateTimeFormat("en-CA", {
+export const getVipBusinessDate = (now = new Date()): string => {
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Mexico_City",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(now);
+  }).formatToParts(now);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${lookup.year}-${lookup.month}-${lookup.day}`;
+};
 
 export const getVipReservationTtlMinutes = (): number => {
   const parsed = Number(process.env.VIP_RESERVATION_TTL_MINUTES || 30);
