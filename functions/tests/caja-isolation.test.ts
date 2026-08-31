@@ -1,4 +1,7 @@
-import { filterComprobantesByListFilters } from "../src/services/detalle-venta.service";
+import {
+  filterComprobantesByListFilters,
+  matchesJornadaListFilter,
+} from "../src/services/detalle-venta.service";
 import { matchesCorteCerradoHoy } from "../src/services/corte-guard.service";
 
 const ventasFixture = [
@@ -69,6 +72,111 @@ describe("filterComprobantesByListFilters", () => {
   });
 });
 
+describe("matchesJornadaListFilter", () => {
+  const jornadaId = "2026-09-12__J8";
+
+  it("acepta jornadaId exacto de POS", () => {
+    expect(
+      matchesJornadaListFilter({ jornadaId: "2026-09-12__J8" }, jornadaId),
+    ).toBe(true);
+  });
+
+  it("acepta jornadaId solo-fecha de VIP/palcos", () => {
+    expect(
+      matchesJornadaListFilter(
+        {
+          jornadaId: "2026-09-12",
+          fecha: { _seconds: 1789200000 },
+        },
+        jornadaId,
+      ),
+    ).toBe(true);
+  });
+
+  it("acepta venta cobrada el mismo día de la fecha de jornada", () => {
+    // 2026-09-12 18:00 UTC ≈ mediodía México
+    expect(
+      matchesJornadaListFilter(
+        {
+          jornadaId: "otro",
+          fecha: {
+            _seconds: Math.floor(Date.UTC(2026, 8, 12, 18, 0, 0) / 1000),
+          },
+        },
+        jornadaId,
+      ),
+    ).toBe(true);
+  });
+
+  it("acepta inventario ligado a la jornada aunque jornadaId no coincida", () => {
+    expect(
+      matchesJornadaListFilter(
+        {
+          jornadaId: "2026-08-31",
+          inventarioId: "2026-09-12__J8__njiNPAltziZ4aDQZEwau",
+          fecha: {
+            _seconds: Math.floor(Date.UTC(2026, 7, 31, 18, 0, 0) / 1000),
+          },
+        },
+        jornadaId,
+      ),
+    ).toBe(true);
+  });
+
+  it("rechaza ventas de otra jornada/día/inventario", () => {
+    expect(
+      matchesJornadaListFilter(
+        {
+          jornadaId: "2026-08-31",
+          inventarioId: "2026-08-22__J5__abc",
+          fecha: {
+            _seconds: Math.floor(Date.UTC(2026, 7, 31, 18, 0, 0) / 1000),
+          },
+        },
+        jornadaId,
+      ),
+    ).toBe(false);
+  });
+
+  it("filtra el listado incluyendo palcos por día o inventario", () => {
+    const rows = [
+      {
+        id: "pos",
+        jornadaId: "2026-09-12__J8",
+        inventarioId: "2026-09-12__J8__suc1",
+      },
+      {
+        id: "vip-fecha",
+        jornadaId: "2026-09-12",
+        inventarioId: "x",
+        fecha: {
+          _seconds: Math.floor(Date.UTC(2026, 8, 12, 20, 0, 0) / 1000),
+        },
+      },
+      {
+        id: "vip-inv",
+        jornadaId: "2026-08-31",
+        inventarioId: "2026-09-12__J8__njiNPAltziZ4aDQZEwau",
+      },
+      {
+        id: "otra",
+        jornadaId: "2026-08-22__J5",
+        inventarioId: "2026-08-22__J5__suc1",
+        fecha: {
+          _seconds: Math.floor(Date.UTC(2026, 7, 22, 18, 0, 0) / 1000),
+        },
+      },
+    ];
+
+    const filtered = filterComprobantesByListFilters(rows, { jornadaId });
+    expect(filtered.map((r) => r.id).sort()).toEqual([
+      "pos",
+      "vip-fecha",
+      "vip-inv",
+    ]);
+  });
+});
+
 describe("matchesCorteCerradoHoy", () => {
   const fecha = "2026-07-09";
 
@@ -83,19 +191,27 @@ describe("matchesCorteCerradoHoy", () => {
     };
 
     expect(
-      matchesCorteCerradoHoy(corteCajaA, {
-        concesionId: "c1",
-        sucursalId: "s1",
-        cajaId: "caja-a",
-      }, fecha),
+      matchesCorteCerradoHoy(
+        corteCajaA,
+        {
+          concesionId: "c1",
+          sucursalId: "s1",
+          cajaId: "caja-a",
+        },
+        fecha,
+      ),
     ).toBe(true);
 
     expect(
-      matchesCorteCerradoHoy(corteCajaA, {
-        concesionId: "c1",
-        sucursalId: "s1",
-        cajaId: "caja-b",
-      }, fecha),
+      matchesCorteCerradoHoy(
+        corteCajaA,
+        {
+          concesionId: "c1",
+          sucursalId: "s1",
+          cajaId: "caja-b",
+        },
+        fecha,
+      ),
     ).toBe(false);
   });
 
@@ -109,11 +225,15 @@ describe("matchesCorteCerradoHoy", () => {
     };
 
     expect(
-      matchesCorteCerradoHoy(corteLegacy, {
-        concesionId: "c1",
-        sucursalId: "s1",
-        cajaId: "caja-b",
-      }, fecha),
+      matchesCorteCerradoHoy(
+        corteLegacy,
+        {
+          concesionId: "c1",
+          sucursalId: "s1",
+          cajaId: "caja-b",
+        },
+        fecha,
+      ),
     ).toBe(false);
   });
 

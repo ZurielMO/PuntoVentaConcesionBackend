@@ -5,6 +5,7 @@ import { ApiError } from "../utils/api-error";
 import { logMovimientoInTransaction } from "./inventario.service";
 import {
   buildJornadaId,
+  parseJornadaId,
   ramaFromInventario,
   resolveCajaActivaParaVendedor,
 } from "./asignacion-caja.service";
@@ -29,6 +30,88 @@ import {
   type InventoryDraw,
 } from "../config/inventory-consumption.config";
 
+const MEXICO_TZ = "America/Mexico_City";
+
+/** YYYY-MM-DD en zona México a partir de Timestamp / Date / string. */
+const toYmdMexico = (value: unknown): string | null => {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.slice(0, 10);
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: MEXICO_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(parsed);
+  }
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: MEXICO_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(value);
+  }
+  if (typeof value === "object") {
+    const o = value as {
+      toDate?: () => Date;
+      _seconds?: number;
+      seconds?: number;
+    };
+    if (typeof o.toDate === "function") return toYmdMexico(o.toDate());
+    if (typeof o._seconds === "number") {
+      return toYmdMexico(new Date(o._seconds * 1000));
+    }
+    if (typeof o.seconds === "number") {
+      return toYmdMexico(new Date(o.seconds * 1000));
+    }
+  }
+  return null;
+};
+
+/**
+ * ¿La venta pertenece a la jornada del filtro?
+ * - jornadaId exacto (POS normal)
+ * - jornadaId = solo la fecha YYYY-MM-DD (VIP/palcos)
+ * - fecha/createdAt del cobro el mismo día de la jornada (día de partido)
+ * - inventarioId de esa jornada (`{jornadaId}__…`)
+ */
+export const matchesJornadaListFilter = (
+  venta: Record<string, unknown>,
+  jornadaId: string,
+): boolean => {
+  const target = String(jornadaId ?? "").trim();
+  if (!target) return true;
+
+  const ventaJornadaId = String(venta.jornadaId ?? "").trim();
+  if (ventaJornadaId === target) return true;
+
+  let fechaJornada: string | null = null;
+  try {
+    fechaJornada = parseJornadaId(target).fecha;
+  } catch {
+    fechaJornada = /^\d{4}-\d{2}-\d{2}$/.test(target) ? target : null;
+  }
+
+  if (fechaJornada) {
+    if (ventaJornadaId === fechaJornada) return true;
+
+    const fechaVenta =
+      toYmdMexico(venta.fecha) ?? toYmdMexico(venta.createdAt);
+    if (fechaVenta === fechaJornada) return true;
+  }
+
+  const inventarioId = String(venta.inventarioId ?? "").trim();
+  if (inventarioId === target || inventarioId.startsWith(`${target}__`)) {
+    return true;
+  }
+
+  return false;
+};
 const col = () => firestorePos.collection(COLLECTIONS.COMPROBANTES_VENTA);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 const productsCol = () => firestorePos.collection(COLLECTIONS.PRODUCTS);
@@ -794,34 +877,94 @@ export const filterComprobantesByListFilters = <T extends Record<string, unknown
     filtered = filtered.filter((r) => r.idUser === filters.idUser);
   }
   if (filters.jornadaId) {
-    filtered = filtered.filter((r) => r.jornadaId === filters.jornadaId);
+    filtered = filtered.filter((r) =>
+      matchesJornadaListFilter(r, filters.jornadaId as string),
+    );
   }
 
   return filtered;
 };
 
-export const listDetalleVentas = async (filters: DetalleVentaListFilters) => {
-  let query: FirebaseFirestore.Query = col();
-  if (filters.concesionId) {
-    query = query.where("concesionId", "==", filters.concesionId);
-  } else if (filters.jornadaId) {
-    query = query.where("jornadaId", "==", filters.jornadaId);
-  } else if (filters.inventarioId) {
-    query = query.where("inventarioId", "==", filters.inventarioId);
+const mergeDocsById = (
+  snaps: FirebaseFirestore.QuerySnapshot[],
+): Array<Record<string, unknown> & { id: string }> => {
+  const byId = new Map<string, Record<string, unknown> & { id: string }>();
+  for (const snap of snaps) {
+    for (const doc of snap.docs) {
+      if (!byId.has(doc.id)) {
+        byId.set(doc.id, toData(doc) as Record<string, unknown> & { id: string });
+      }
+    }
   }
+  return [...byId.values()];
+};
 
-  const snap = await query.get();
-  let results = snap.docs.map(toData);
+export const listDetalleVentas = async (filters: DetalleVentaListFilters) => {
+  let results: Array<Record<string, unknown> & { id: string }>;
+
+  if (filters.concesionId) {
+    let query: FirebaseFirestore.Query = col().where(
+      "concesionId",
+      "==",
+      filters.concesionId,
+    );
+    const snap = await query.get();
+    results = snap.docs.map(
+      (doc) => toData(doc) as Record<string, unknown> & { id: string },
+    );
+  } else if (filters.jornadaId) {
+    const jornadaId = String(filters.jornadaId).trim();
+    const queries: Promise<FirebaseFirestore.QuerySnapshot>[] = [
+      col().where("jornadaId", "==", jornadaId).get(),
+    ];
+
+    let fechaJornada: string | null = null;
+    try {
+      fechaJornada = parseJornadaId(jornadaId).fecha;
+    } catch {
+      fechaJornada = null;
+    }
+
+    // VIP/palcos suelen guardar solo la fecha YYYY-MM-DD en jornadaId.
+    if (fechaJornada && fechaJornada !== jornadaId) {
+      queries.push(col().where("jornadaId", "==", fechaJornada).get());
+    }
+
+    // Ventas ligadas al inventario de esa jornada (prefijo `{jornadaId}__`).
+    queries.push(
+      col()
+        .where("inventarioId", ">=", `${jornadaId}__`)
+        .where("inventarioId", "<", `${jornadaId}__\uf8ff`)
+        .get(),
+    );
+
+    const snaps = await Promise.all(queries);
+    results = mergeDocsById(snaps);
+  } else if (filters.inventarioId) {
+    const snap = await col()
+      .where("inventarioId", "==", filters.inventarioId)
+      .get();
+    results = snap.docs.map(
+      (doc) => toData(doc) as Record<string, unknown> & { id: string },
+    );
+  } else {
+    const snap = await col().get();
+    results = snap.docs.map(
+      (doc) => toData(doc) as Record<string, unknown> & { id: string },
+    );
+  }
 
   results = filterComprobantesByListFilters(results, filters);
 
   results.sort((a, b) => {
-    const ta = (a.fecha as { _seconds?: number })?._seconds
-      ?? (a.createdAt as { _seconds?: number })?._seconds
-      ?? 0;
-    const tb = (b.fecha as { _seconds?: number })?._seconds
-      ?? (b.createdAt as { _seconds?: number })?._seconds
-      ?? 0;
+    const ta =
+      (a.fecha as { _seconds?: number })?._seconds ??
+      (a.createdAt as { _seconds?: number })?._seconds ??
+      0;
+    const tb =
+      (b.fecha as { _seconds?: number })?._seconds ??
+      (b.createdAt as { _seconds?: number })?._seconds ??
+      0;
     return tb - ta;
   });
 
