@@ -215,7 +215,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     expect(mockSessionCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         line_items: [expect.objectContaining({ price_data: expect.objectContaining({ unit_amount: 25500 }) })],
-        cancel_url: expect.stringMatching(/session_id=\{CHECKOUT_SESSION_ID\}/),
+        cancel_url: expect.stringMatching(/cs=\{CHECKOUT_SESSION_ID\}/),
       }),
       expect.objectContaining({ idempotencyKey: expect.stringMatching(/^vip_checkout_/) }),
     );

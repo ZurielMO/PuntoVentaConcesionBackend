@@ -69,8 +69,6 @@ const describe = JSON.parse(describeRaw.stdout);
 const liveEnv = describe.serviceConfig?.environmentVariables || {};
 
 const envLines = [];
-
-const envLines = [];
 const keepOrder = [
   "PROJECT_ID",
   "FIRESTORE_DATABASE_ID",
@@ -106,7 +104,7 @@ merged.STORAGE_BUCKET =
   merged.STORAGE_BUCKET || "puntoventacl.firebasestorage.app";
 merged.STRIPE_CURRENCY = local.STRIPE_CURRENCY || merged.STRIPE_CURRENCY || "mxn";
 merged.VIP_CHECKOUT_SUCCESS_URL =
-  "https://concesiones.clubleon.mx/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}";
+  "https://concesiones.clubleon.mx/servicio-palcos/pago/exito?cs={CHECKOUT_SESSION_ID}";
 merged.VIP_CHECKOUT_CANCEL_URL =
   "https://concesiones.clubleon.mx/servicio-palcos/pago/cancelado";
 merged.VIP_RESERVATION_TTL_MINUTES = local.VIP_RESERVATION_TTL_MINUTES || "30";

@@ -348,7 +348,7 @@ const pickCatalogStockLine = (
 const withCheckoutCancelParams = (cancelUrl: string, orderId: string): string => {
   const [base, hash] = cancelUrl.split("#");
   const joiner = base.includes("?") ? "&" : "?";
-  const next = `${base}${joiner}session_id={CHECKOUT_SESSION_ID}&order_id=${encodeURIComponent(orderId)}`;
+  const next = `${base}${joiner}cs={CHECKOUT_SESSION_ID}&order_id=${encodeURIComponent(orderId)}`;
   return hash ? `${next}#${hash}` : next;
 };
 

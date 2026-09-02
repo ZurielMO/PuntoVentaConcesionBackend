@@ -57,7 +57,10 @@ export const resolveVipReturnUrls = (requestOrigin?: string): { successUrl: stri
   }
   const origin = resolveVipFrontendOrigin(requestOrigin);
   return {
-    successUrl: `${origin}/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}`,
+    // El parámetro se llama `cs` y no `session_id`: mod_security (regla de
+    // session fixation) bloquea con "Not Acceptable" cualquier query llamado
+    // `session_id` que llegue con referer externo, como el retorno de Stripe.
+    successUrl: `${origin}/servicio-palcos/pago/exito?cs={CHECKOUT_SESSION_ID}`,
     cancelUrl: `${origin}/servicio-palcos/pago/cancelado`,
   };
 };

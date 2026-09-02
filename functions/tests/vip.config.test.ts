@@ -40,11 +40,11 @@ describe("VIP configuration helpers", () => {
     process.env.VIP_CHECKOUT_SUCCESS_URL = "https://concesiones.clubleon.mx/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}";
     process.env.VIP_CHECKOUT_CANCEL_URL = "https://concesiones.clubleon.mx/servicio-palcos/pago/cancelado";
     expect(resolveVipReturnUrls()).toEqual({
-      successUrl: "http://localhost:9002/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}",
+      successUrl: "http://localhost:9002/servicio-palcos/pago/exito?cs={CHECKOUT_SESSION_ID}",
       cancelUrl: "http://localhost:9002/servicio-palcos/pago/cancelado",
     });
     expect(resolveVipReturnUrls("http://localhost:9002")).toEqual({
-      successUrl: "http://localhost:9002/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}",
+      successUrl: "http://localhost:9002/servicio-palcos/pago/exito?cs={CHECKOUT_SESSION_ID}",
       cancelUrl: "http://localhost:9002/servicio-palcos/pago/cancelado",
     });
   });
@@ -54,7 +54,7 @@ describe("VIP configuration helpers", () => {
     process.env.VIP_CHECKOUT_SUCCESS_URL = "https://concesiones.clubleon.mx/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}";
     process.env.VIP_CHECKOUT_CANCEL_URL = "https://concesiones.clubleon.mx/servicio-palcos/pago/cancelado";
     expect(resolveVipReturnUrls("http://localhost:9002")).toEqual({
-      successUrl: "http://localhost:9002/servicio-palcos/pago/exito?session_id={CHECKOUT_SESSION_ID}",
+      successUrl: "http://localhost:9002/servicio-palcos/pago/exito?cs={CHECKOUT_SESSION_ID}",
       cancelUrl: "http://localhost:9002/servicio-palcos/pago/cancelado",
     });
   });
