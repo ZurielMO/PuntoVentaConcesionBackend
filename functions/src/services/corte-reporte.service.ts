@@ -1,5 +1,6 @@
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
+import { ApiError } from "../utils/api-error";
 import {
   aggregateProductoReporteFromVentas,
   aggregateTotalsByMetodoPago,
@@ -14,8 +15,10 @@ import * as productService from "./product.service";
 import { resolveJornadaParaReporte } from "./jornada.service";
 import {
   normalizeRama,
+  ramaFromInventario,
   type JornadaRama,
 } from "./asignacion-caja.service";
+import { matchesJornadaListFilter } from "./detalle-venta.service";
 import type { ConcessionTipo } from "../models";
 import { isVentaPalcos } from "../utils/venta-palcos.util";
 
@@ -117,12 +120,11 @@ const loadInventariosJornada = async (
   const snap = await query.get();
   let inventarios = snap.docs.map((doc) => ({
     id: doc.id,
-    ...doc.data(),
+    ...(doc.data() as Record<string, unknown>),
   }));
 
   inventarios = inventarios.filter(
-    (inv) =>
-      normalizeRama((inv as { rama?: string }).rama) === normalizeRama(rama),
+    (inv) => ramaFromInventario(inv, inv.id) === normalizeRama(rama),
   );
 
   if (sucursalId) {
@@ -161,13 +163,8 @@ const aggregateStockByProduct = async (
 const filterVentasJornada = (
   ventas: Array<Record<string, unknown>>,
   jornadaId: string,
-  inventarioIds: Set<string>,
-) =>
-  ventas.filter((v) => {
-    if (v.jornadaId === jornadaId) return true;
-    const invId = v.inventarioId as string | undefined;
-    return invId ? inventarioIds.has(invId) : false;
-  });
+  _inventarioIds: Set<string>,
+) => ventas.filter((v) => matchesJornadaListFilter(v, jornadaId));
 
 const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
   cantidadRegular: 0,
@@ -472,6 +469,7 @@ const buildReporteForConcesion = async (
   const ventasRaw = await detalleVentaService.listDetalleVentas({
     concesionId: concesion.id,
     sucursalId,
+    jornadaId: jornada.jornadaId,
   });
   const ventasFiltradas = filterVentasJornada(
     ventasRaw,
@@ -548,6 +546,15 @@ const buildReporteForConcesion = async (
 export const buildReporteCortes = async (
   filters: ReporteCortesFilters,
 ): Promise<ReporteCortes> => {
+  if (!filters.jornadaId && !(filters.fecha && filters.jornadaNumero != null)) {
+    throw new ApiError(
+      400,
+      "Debes indicar jornadaId para el reporte de cortes",
+      true,
+      "MISSING_JORNADA",
+    );
+  }
+
   const resolved = await resolveJornadaParaReporte({
     jornadaId: filters.jornadaId,
     fecha: filters.fecha,

@@ -237,8 +237,6 @@ export const listJornadasDisponibles = async (filters?: {
     string,
     { fecha: string; numero: number; rama: JornadaRama }
   >();
-  /** jornadaIds respaldados por inventario con rama explícita o id con rama. */
-  const explicitRamaIds = new Set<string>();
 
   for (const inv of inventarios) {
     const fechaRaw = String(inv.jornada_fecha ?? "");
@@ -246,10 +244,9 @@ export const listJornadasDisponibles = async (filters?: {
     if (!fechaRaw || !numero) continue;
 
     const fecha = normalizeFecha(fechaRaw);
-    const { rama, explicit } = resolveInvRama(inv);
+    const { rama } = resolveInvRama(inv);
     const jornadaId = buildJornadaId(fecha, numero, rama);
     byJornada.set(jornadaId, { fecha, numero, rama });
-    if (explicit) explicitRamaIds.add(jornadaId);
   }
 
   // Incluir jornadas activas aunque aún no tengan inventarios.
@@ -264,13 +261,61 @@ export const listJornadasDisponibles = async (filters?: {
     }
   }
 
-  // Quitar "varonil" fantasma: misma fecha/número que una femenil, sin respaldo
-  // real (ni campo rama ni id varonil). Conserva historial contable explícito.
+  /**
+   * ¿Hay contabilidad real (ventas/cortes) para esta jornada varonil?
+   * Ignora ventas mal etiquetadas cuyo inventario es femenil.
+   */
+  const hasVaronilAccounting = async (jornadaId: string): Promise<boolean> => {
+    const isFemenilInv = (inventarioId: string) => {
+      const rest = inventarioId.startsWith(`${jornadaId}__`)
+        ? inventarioId.slice(jornadaId.length + 2)
+        : inventarioId;
+      return rest === "femenil" || rest.startsWith("femenil__");
+    };
+
+    const ventasSnap = await firestorePos
+      .collection(COLLECTIONS.COMPROBANTES_VENTA)
+      .where("jornadaId", "==", jornadaId)
+      .limit(25)
+      .get();
+    for (const doc of ventasSnap.docs) {
+      const invId = String(doc.data().inventarioId ?? "");
+      if (!invId || !isFemenilInv(invId)) return true;
+    }
+
+    const invPrefixSnap = await firestorePos
+      .collection(COLLECTIONS.COMPROBANTES_VENTA)
+      .where("inventarioId", ">=", `${jornadaId}__`)
+      .where("inventarioId", "<", `${jornadaId}__\uf8ff`)
+      .limit(25)
+      .get();
+    for (const doc of invPrefixSnap.docs) {
+      const invId = String(doc.data().inventarioId ?? "");
+      if (invId.startsWith(`${jornadaId}__`) && !isFemenilInv(invId)) {
+        return true;
+      }
+    }
+
+    const cortesSnap = await firestorePos
+      .collection(COLLECTIONS.CORTES)
+      .where("jornadaId", "==", jornadaId)
+      .limit(5)
+      .get();
+    if (!cortesSnap.empty) return true;
+
+    return false;
+  };
+
+  // Quitar varonil fantasma: misma fecha/número que femenil, no activa en RTDB,
+  // y sin ventas/cortes reales de esa rama. Conserva historial contable.
   for (const [id, data] of [...byJornada.entries()]) {
     if (data.rama !== "varonil") continue;
     const femenilId = buildJornadaId(data.fecha, data.numero, "femenil");
     if (!byJornada.has(femenilId)) continue;
-    if (!explicitRamaIds.has(id)) {
+    const claveActiva = `${data.fecha}__${data.numero}`;
+    if (activasPorClave.get(claveActiva) === "varonil") continue;
+    const hasAccounting = await hasVaronilAccounting(id);
+    if (!hasAccounting) {
       byJornada.delete(id);
     }
   }

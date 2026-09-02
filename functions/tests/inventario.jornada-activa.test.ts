@@ -197,9 +197,53 @@ describe("listJornadasDisponibles — histórico", () => {
     }));
   };
 
+  const emptyQuery = (): any => {
+    const q: any = {
+      where: () => q,
+      limit: () => ({
+        get: async () => ({ docs: [], empty: true }),
+      }),
+      get: async () => ({ docs: [], empty: true }),
+    };
+    return q;
+  };
+
+  const mockFirestoreWithInventarios = (
+    invDocs: Array<{ id: string; data: () => Record<string, unknown> }>,
+    ventaDocs: Array<{ data: () => Record<string, unknown> }> = [],
+  ) => {
+    jest.doMock("../src/config/firebase", () => ({
+      firestorePos: {
+        collection: (name: string): any => {
+          if (name === "inventarios") {
+            return {
+              where: () => ({
+                get: async () => ({ docs: invDocs }),
+              }),
+              get: async () => ({ docs: invDocs }),
+            };
+          }
+          if (name === "comprobantes_venta" && ventaDocs.length > 0) {
+            const q: any = {
+              where: () => q,
+              limit: () => ({
+                get: async () => ({
+                  docs: ventaDocs,
+                  empty: false,
+                }),
+              }),
+            };
+            return q;
+          }
+          return emptyQuery();
+        },
+      },
+    }));
+  };
+
   it("incluye inventarios cerrados y distingue ramas", async () => {
     mockEmptyRtdb();
-    const docs = [
+    mockFirestoreWithInventarios([
       {
         id: "2026-09-07__J6__femenil__s1",
         data: () => ({
@@ -232,36 +276,20 @@ describe("listJornadasDisponibles — histórico", () => {
           concesion_id: "c1",
         }),
       },
-    ];
-
-    jest.doMock("../src/config/firebase", () => ({
-      firestorePos: {
-        collection: () => ({
-          where: () => ({
-            get: async () => ({ docs }),
-          }),
-          get: async () => ({ docs }),
-        }),
-      },
-    }));
+    ]);
 
     const { listJornadasDisponibles } = await import(
       "../src/services/jornada.service"
     );
     const list = await listJornadasDisponibles();
-    expect(list).toHaveLength(3);
     expect(list.map((j) => j.jornadaId).sort()).toEqual(
-      [
-        "2026-08-01__J3",
-        "2026-09-07__J6",
-        "2026-09-07__J6__femenil",
-      ].sort(),
+      ["2026-08-01__J3", "2026-09-07__J6__femenil"].sort(),
     );
     const fem = list.find((j) => j.rama === "femenil");
     expect(fem?.etiqueta).toContain("Femenil");
   });
 
-  it("elimina varonil fantasma cuando legacy sin rama coincide con femenil", async () => {
+  it("elimina varonil fantasma con id normal sin ventas (gemelo femenil)", async () => {
     jest.doMock("../src/config/firebase.appoficial2", () => ({
       getRealtimeDbAppOficial2: () => ({
         ref: (path: string) => ({
@@ -286,7 +314,7 @@ describe("listJornadasDisponibles — histórico", () => {
       }),
     }));
 
-    const docs = [
+    mockFirestoreWithInventarios([
       {
         id: "2026-09-07__J6__femenil__s1",
         data: () => ({
@@ -299,28 +327,17 @@ describe("listJornadasDisponibles — histórico", () => {
         }),
       },
       {
-        // Legacy sin rama ni id femenil → fantasma varonil a eliminar
-        id: "legacy-sin-forma",
+        id: "2026-09-07__J6__s1",
         data: () => ({
           jornada_fecha: "2026-09-07",
           jornada_numero: 6,
-          activo: true,
-          sucursal_id: "s2",
+          rama: "varonil",
+          activo: false,
+          sucursal_id: "s1",
           concesion_id: "c1",
         }),
       },
-    ];
-
-    jest.doMock("../src/config/firebase", () => ({
-      firestorePos: {
-        collection: () => ({
-          where: () => ({
-            get: async () => ({ docs }),
-          }),
-          get: async () => ({ docs }),
-        }),
-      },
-    }));
+    ]);
 
     const { listJornadasDisponibles } = await import(
       "../src/services/jornada.service"
@@ -329,4 +346,47 @@ describe("listJornadasDisponibles — histórico", () => {
     expect(list.map((j) => j.jornadaId)).toEqual(["2026-09-07__J6__femenil"]);
     expect(list[0].rama).toBe("femenil");
   });
+
+  it("conserva varonil histórico gemelo si hay ventas reales", async () => {
+    mockEmptyRtdb();
+    mockFirestoreWithInventarios(
+      [
+        {
+          id: "2026-09-07__J6__femenil__s1",
+          data: () => ({
+            jornada_fecha: "2026-09-07",
+            jornada_numero: 6,
+            rama: "femenil",
+            sucursal_id: "s1",
+          }),
+        },
+        {
+          id: "2026-09-07__J6__s1",
+          data: () => ({
+            jornada_fecha: "2026-09-07",
+            jornada_numero: 6,
+            rama: "varonil",
+            sucursal_id: "s1",
+          }),
+        },
+      ],
+      [
+        {
+          data: () => ({
+            jornadaId: "2026-09-07__J6",
+            inventarioId: "2026-09-07__J6__s1",
+          }),
+        },
+      ],
+    );
+
+    const { listJornadasDisponibles } = await import(
+      "../src/services/jornada.service"
+    );
+    const list = await listJornadasDisponibles();
+    expect(list.map((j) => j.jornadaId).sort()).toEqual(
+      ["2026-09-07__J6", "2026-09-07__J6__femenil"].sort(),
+    );
+  });
 });
+
