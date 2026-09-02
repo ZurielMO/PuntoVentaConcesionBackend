@@ -4,8 +4,10 @@ import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
 import { logMovimientoInTransaction } from "./inventario.service";
 import {
+  alignJornadaIdWithInventario,
   buildJornadaId,
   parseJornadaId,
+  ramaFromId,
   ramaFromInventario,
   resolveCajaActivaParaVendedor,
 } from "./asignacion-caja.service";
@@ -73,12 +75,43 @@ const toYmdMexico = (value: unknown): string | null => {
   return null;
 };
 
+/** Prefijo de inventario compatible con la rama del filtro (varonil no traga femenil). */
+const inventarioMatchesJornadaPrefix = (
+  inventarioId: string,
+  jornadaId: string,
+): boolean => {
+  if (inventarioId === jornadaId) return true;
+  if (!inventarioId.startsWith(`${jornadaId}__`)) return false;
+  try {
+    const filterRama = parseJornadaId(jornadaId).rama;
+    if (filterRama === "varonil") {
+      const rest = inventarioId.slice(jornadaId.length + 2);
+      if (rest === "femenil" || rest.startsWith("femenil__")) return false;
+    }
+  } catch {
+    // jornadaId no parseable: mantener match por prefijo
+  }
+  return true;
+};
+
+const ventaRamaHint = (
+  venta: Record<string, unknown>,
+): ReturnType<typeof ramaFromId> => {
+  const fromInv = ramaFromId(String(venta.inventarioId ?? ""));
+  if (fromInv) return fromInv;
+  try {
+    return parseJornadaId(String(venta.jornadaId ?? "")).rama;
+  } catch {
+    return ramaFromId(String(venta.jornadaId ?? ""));
+  }
+};
+
 /**
  * ¿La venta pertenece a la jornada del filtro?
- * - jornadaId exacto (POS normal)
+ * - jornadaId exacto (POS normal), sin mezclar ramas vía inventario
  * - jornadaId = solo la fecha YYYY-MM-DD (VIP/palcos)
- * - fecha/createdAt del cobro el mismo día de la jornada (día de partido)
- * - inventarioId de esa jornada (`{jornadaId}__…`)
+ * - fecha/createdAt del cobro el mismo día (sin cruzar ramas conocidas)
+ * - inventarioId de esa jornada (`{jornadaId}__…`), rama-safe
  */
 export const matchesJornadaListFilter = (
   venta: Record<string, unknown>,
@@ -87,30 +120,62 @@ export const matchesJornadaListFilter = (
   const target = String(jornadaId ?? "").trim();
   if (!target) return true;
 
-  const ventaJornadaId = String(venta.jornadaId ?? "").trim();
-  if (ventaJornadaId === target) return true;
-
+  let filterRama: ReturnType<typeof ramaFromId> = null;
   let fechaJornada: string | null = null;
   try {
-    fechaJornada = parseJornadaId(target).fecha;
+    const parsed = parseJornadaId(target);
+    filterRama = parsed.rama;
+    fechaJornada = parsed.fecha;
   } catch {
     fechaJornada = /^\d{4}-\d{2}-\d{2}$/.test(target) ? target : null;
   }
 
+  const inventarioId = String(venta.inventarioId ?? "").trim();
+  const alignedJornadaId =
+    alignJornadaIdWithInventario(
+      String(venta.jornadaId ?? ""),
+      inventarioId || null,
+    ) ?? String(venta.jornadaId ?? "").trim();
+
+  if (alignedJornadaId === target) return true;
+
   if (fechaJornada) {
-    if (ventaJornadaId === fechaJornada) return true;
+    if (alignedJornadaId === fechaJornada || String(venta.jornadaId ?? "").trim() === fechaJornada) {
+      return true;
+    }
 
     const fechaVenta =
       toYmdMexico(venta.fecha) ?? toYmdMexico(venta.createdAt);
-    if (fechaVenta === fechaJornada) return true;
+    if (fechaVenta === fechaJornada) {
+      const hint = ventaRamaHint({
+        ...venta,
+        jornadaId: alignedJornadaId,
+        inventarioId,
+      });
+      if (filterRama && hint && hint !== filterRama) return false;
+      return true;
+    }
   }
 
-  const inventarioId = String(venta.inventarioId ?? "").trim();
-  if (inventarioId === target || inventarioId.startsWith(`${target}__`)) {
+  if (inventarioId && inventarioMatchesJornadaPrefix(inventarioId, target)) {
     return true;
   }
 
   return false;
+};
+
+/** Corrige jornadaId en respuestas cuando el inventario implica otra rama. */
+export const enrichComprobanteJornada = <
+  T extends Record<string, unknown> & { id: string },
+>(
+  row: T,
+): T => {
+  const aligned = alignJornadaIdWithInventario(
+    row.jornadaId as string | undefined,
+    row.inventarioId as string | undefined,
+  );
+  if (!aligned || aligned === row.jornadaId) return row;
+  return { ...row, jornadaId: aligned };
 };
 const col = () => firestorePos.collection(COLLECTIONS.COMPROBANTES_VENTA);
 const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
@@ -380,11 +445,14 @@ const resolveCajaForVenta = async (params: {
   if (!invDoc.exists) {
     throw new ApiError(404, "Inventario no encontrado", true, "NOT_FOUND");
   }
-  const inv = invDoc.data() ?? {};
+  const inv = {
+    id: invDoc.id,
+    ...(invDoc.data() as Record<string, unknown>),
+  } as Record<string, unknown> & { id: string };
   const jornadaId = buildJornadaId(
     String(inv.jornada_fecha ?? ""),
     Number(inv.jornada_numero ?? 0),
-    ramaFromInventario(inv),
+    ramaFromInventario(inv, invDoc.id),
   );
 
   let fallbackCajaId: string | null = null;
@@ -862,7 +930,9 @@ export const filterComprobantesByListFilters = <T extends Record<string, unknown
   results: T[],
   filters: DetalleVentaListFilters,
 ): T[] => {
-  let filtered = results;
+  let filtered = results.map((r) =>
+    enrichComprobanteJornada(r as T & { id: string }),
+  ) as T[];
 
   if (filters.inventarioId && filters.concesionId) {
     filtered = filtered.filter((r) => r.inventarioId === filters.inventarioId);

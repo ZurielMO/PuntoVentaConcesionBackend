@@ -114,7 +114,7 @@ export const getOperationalListFiltersAsync = async (
   const jornadaId = buildJornadaId(
     String(inv.jornada_fecha ?? ""),
     Number(inv.jornada_numero ?? 0),
-    ramaFromInventario(inv),
+    ramaFromInventario(inv, inventarioId),
   );
 
   const resolved = await resolveCajaActivaParaVendedor({

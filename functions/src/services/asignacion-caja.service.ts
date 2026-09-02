@@ -46,14 +46,69 @@ export const parseJornadaId = (
   };
 };
 
+/** Detecta `__femenil` en ids de jornada/inventario (`…__J6__femenil` / `…__J6__femenil__{suc}`). */
+export const ramaFromId = (id?: string | null): JornadaRama | null => {
+  const raw = String(id ?? "").trim();
+  if (!raw) return null;
+  if (/(?:^|__)femenil(?:__|$)/.test(raw)) return "femenil";
+  // Ids de jornada/inventario con forma fecha__J#: sin sufijo = varonil.
+  if (/^\d{4}-\d{2}-\d{2}__J\d+/.test(raw)) return "varonil";
+  return null;
+};
+
+/**
+ * Rama del inventario: campo `rama` explícito → id del doc → default varonil.
+ * El id evita etiquetar como Varonil inventarios `…__femenil__…` legacy sin campo.
+ */
 export const ramaFromInventario = (
-  data: { rama?: unknown } | Record<string, unknown> | null | undefined,
-): JornadaRama =>
-  normalizeRama(
-    data && typeof data === "object" && "rama" in data
-      ? (data.rama as string | undefined)
-      : undefined,
-  );
+  data:
+    | { rama?: unknown; id?: unknown }
+    | Record<string, unknown>
+    | null
+    | undefined,
+  inventarioId?: string | null,
+): JornadaRama => {
+  if (data && typeof data === "object") {
+    const rawRama = "rama" in data ? data.rama : undefined;
+    if (rawRama === "femenil" || rawRama === "varonil") {
+      return normalizeRama(rawRama as string);
+    }
+  }
+  const idCandidate =
+    (inventarioId != null && String(inventarioId)) ||
+    (data && typeof data === "object" && "id" in data
+      ? String(data.id ?? "")
+      : "");
+  return ramaFromId(idCandidate) ?? "varonil";
+};
+
+/**
+ * Alinea jornadaId con la rama real del inventario (ventas/cortes mal etiquetados).
+ * No borra comprobantes: solo corrige el id de etiqueta.
+ */
+export const alignJornadaIdWithInventario = (
+  jornadaId: string | null | undefined,
+  inventarioId: string | null | undefined,
+): string | null => {
+  const invId = String(inventarioId ?? "").trim();
+  const current = String(jornadaId ?? "").trim();
+  const ramaInv = ramaFromId(invId);
+  if (!ramaInv || !invId) return current || null;
+
+  try {
+    if (current) {
+      const parsed = parseJornadaId(current);
+      if (parsed.rama === ramaInv) return current;
+      return buildJornadaId(parsed.fecha, parsed.numero, ramaInv);
+    }
+  } catch {
+    // jornadaId inválido o solo-fecha: intentar desde inventario
+  }
+
+  const match = invId.match(/^(\d{4}-\d{2}-\d{2})__J(\d+)/);
+  if (match) return buildJornadaId(match[1], Number(match[2]), ramaInv);
+  return current || null;
+};
 
 export const listAsignacionesCajas = async (params: {
   jornadaId: string;

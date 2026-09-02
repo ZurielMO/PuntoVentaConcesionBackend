@@ -6,6 +6,7 @@ import {
   buildJornadaId,
   normalizeRama,
   parseJornadaId,
+  ramaFromId,
   type JornadaRama,
 } from "./asignacion-caja.service";
 import { normalizeFecha } from "./inventario.service";
@@ -55,18 +56,9 @@ const readNodoActivo = async (
     }
   }
 
-  if (Object.keys(activas).length > 0) {
-    return activas;
-  }
-
-  // Fallback: si ninguna marca activo=true, devolver el nodo completo etiquetado.
-  const fallback: Record<string, JornadaActivaValue> = {};
-  for (const [key, jornada] of Object.entries(value)) {
-    if (jornada) {
-      fallback[`${rama}:${key}`] = { ...jornada, rama };
-    }
-  }
-  return fallback;
+  // Solo jornadas con activo===true. No reinyectar el nodo completo:
+  // eso marcaba Varonil desactivado como "activa" y contaminaba selects.
+  return activas;
 };
 
 /**
@@ -83,16 +75,16 @@ export const getJornadaActiva = async (): Promise<
   return { ...varonil, ...femenil };
 };
 
-/** Primera entrada activa de una rama (o null). */
+/** Primera entrada con activo===true de una rama (o null). */
 export const pickJornadaActivaPorRama = (
   activas: Record<string, JornadaActivaValue>,
   rama: JornadaRama,
 ): JornadaActivaValue | null => {
   const entries = Object.values(activas).filter(
-    (j) => j && normalizeRama(j.rama) === rama,
+    (j) => j && normalizeRama(j.rama) === rama && j.activo === true,
   );
   if (entries.length === 0) return null;
-  return entries.find((j) => j.activo === true) ?? entries[0];
+  return entries[0];
 };
 
 export const getJornadasActivasPorRama = async (): Promise<{
@@ -183,18 +175,15 @@ export const listJornadasDisponibles = async (filters?: {
   }
 
   const snap = await query.get();
-  let inventarios = snap.docs.map((doc) => doc.data());
+  let inventarios: Array<Record<string, unknown> & { id: string }> =
+    snap.docs.map((doc) => ({
+      id: doc.id,
+      ...(doc.data() as Record<string, unknown>),
+    }));
 
   if (filters?.sucursalId) {
     inventarios = inventarios.filter(
       (inv) => inv.sucursal_id === filters.sucursalId,
-    );
-  }
-
-  if (filters?.rama) {
-    const ramaFilter = normalizeRama(filters.rama);
-    inventarios = inventarios.filter(
-      (inv) => normalizeRama(inv.rama as string | undefined) === ramaFilter,
     );
   }
 
@@ -205,6 +194,8 @@ export const listJornadasDisponibles = async (filters?: {
     for (const rama of ["varonil", "femenil"] as const) {
       const j = porRama[rama];
       if (!j?.fecha || j.jornada == null) continue;
+      // Solo claves realmente activas (getJornadasActivasPorRama ya exige activo).
+      if (j.activo !== true) continue;
       const fecha = normalizeFecha(String(j.fecha));
       activasPorClave.set(`${fecha}__${Number(j.jornada)}`, rama);
     }
@@ -212,11 +203,41 @@ export const listJornadasDisponibles = async (filters?: {
     // Si RTDB no está disponible, seguimos solo con inventarios.
   }
 
+  const resolveInvRama = (inv: Record<string, unknown>): {
+    rama: JornadaRama;
+    explicit: boolean;
+  } => {
+    const rawRama = inv.rama;
+    if (rawRama === "femenil" || rawRama === "varonil") {
+      return { rama: normalizeRama(rawRama as string), explicit: true };
+    }
+    const fromId = ramaFromId(String(inv.id ?? ""));
+    if (fromId) {
+      // Id con/sin __femenil es evidencia real del inventario (historial contable).
+      return { rama: fromId, explicit: true };
+    }
+    const fechaRaw = String(inv.jornada_fecha ?? "");
+    const numero = Number(inv.jornada_numero ?? 0);
+    const fecha = fechaRaw ? normalizeFecha(fechaRaw) : "";
+    const clave = fecha && numero ? `${fecha}__${numero}` : "";
+    return {
+      rama: (clave && activasPorClave.get(clave)) || "varonil",
+      explicit: false,
+    };
+  };
+
+  if (filters?.rama) {
+    const ramaFilter = normalizeRama(filters.rama);
+    inventarios = inventarios.filter(
+      (inv) => resolveInvRama(inv).rama === ramaFilter,
+    );
+  }
+
   const byJornada = new Map<
     string,
     { fecha: string; numero: number; rama: JornadaRama }
   >();
-  /** jornadaIds que vienen de al menos un inventario con `rama` explícita. */
+  /** jornadaIds respaldados por inventario con rama explícita o id con rama. */
   const explicitRamaIds = new Set<string>();
 
   for (const inv of inventarios) {
@@ -225,17 +246,10 @@ export const listJornadasDisponibles = async (filters?: {
     if (!fechaRaw || !numero) continue;
 
     const fecha = normalizeFecha(fechaRaw);
-    const clave = `${fecha}__${numero}`;
-    const rawRama = inv.rama;
-    const hasExplicit =
-      rawRama === "femenil" || rawRama === "varonil";
-    const rama: JornadaRama = hasExplicit
-      ? normalizeRama(rawRama as string)
-      : (activasPorClave.get(clave) ?? "varonil");
-
+    const { rama, explicit } = resolveInvRama(inv);
     const jornadaId = buildJornadaId(fecha, numero, rama);
     byJornada.set(jornadaId, { fecha, numero, rama });
-    if (hasExplicit) explicitRamaIds.add(jornadaId);
+    if (explicit) explicitRamaIds.add(jornadaId);
   }
 
   // Incluir jornadas activas aunque aún no tengan inventarios.
@@ -250,7 +264,8 @@ export const listJornadasDisponibles = async (filters?: {
     }
   }
 
-  // Quitar "varonil" fantasma: misma fecha/número que una femenil, sin rama explícita.
+  // Quitar "varonil" fantasma: misma fecha/número que una femenil, sin respaldo
+  // real (ni campo rama ni id varonil). Conserva historial contable explícito.
   for (const [id, data] of [...byJornada.entries()]) {
     if (data.rama !== "varonil") continue;
     const femenilId = buildJornadaId(data.fecha, data.numero, "femenil");

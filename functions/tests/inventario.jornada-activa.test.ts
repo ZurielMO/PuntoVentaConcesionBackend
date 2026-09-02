@@ -61,6 +61,24 @@ describe("jornadaId con rama", () => {
     expect(normalizeRama(undefined)).toBe("varonil");
     expect(normalizeRama("femenil")).toBe("femenil");
   });
+
+  it("ramaFromInventario usa id cuando falta campo rama", async () => {
+    const { ramaFromInventario, alignJornadaIdWithInventario } = await import(
+      "../src/services/asignacion-caja.service"
+    );
+    expect(
+      ramaFromInventario(
+        { jornada_fecha: "2026-09-07", jornada_numero: 6 },
+        "2026-09-07__J6__femenil__lv0Bp",
+      ),
+    ).toBe("femenil");
+    expect(
+      alignJornadaIdWithInventario(
+        "2026-09-07__J6",
+        "2026-09-07__J6__femenil__lv0Bp",
+      ),
+    ).toBe("2026-09-07__J6__femenil");
+  });
 });
 
 describe("resolveJornadaActiva", () => {
@@ -183,6 +201,7 @@ describe("listJornadasDisponibles — histórico", () => {
     mockEmptyRtdb();
     const docs = [
       {
+        id: "2026-09-07__J6__femenil__s1",
         data: () => ({
           jornada_fecha: "2026-09-07",
           jornada_numero: 6,
@@ -193,6 +212,7 @@ describe("listJornadasDisponibles — histórico", () => {
         }),
       },
       {
+        id: "2026-08-01__J3__s1",
         data: () => ({
           jornada_fecha: "2026-08-01",
           jornada_numero: 3,
@@ -202,6 +222,7 @@ describe("listJornadasDisponibles — histórico", () => {
         }),
       },
       {
+        id: "2026-09-07__J6__s1",
         data: () => ({
           jornada_fecha: "2026-09-07",
           jornada_numero: 6,
@@ -267,6 +288,7 @@ describe("listJornadasDisponibles — histórico", () => {
 
     const docs = [
       {
+        id: "2026-09-07__J6__femenil__s1",
         data: () => ({
           jornada_fecha: "2026-09-07",
           jornada_numero: 6,
@@ -277,8 +299,9 @@ describe("listJornadasDisponibles — histórico", () => {
         }),
       },
       {
+        // Legacy sin rama ni id femenil → fantasma varonil a eliminar
+        id: "legacy-sin-forma",
         data: () => ({
-          // Legacy sin rama → antes se listaba como varonil fantasma
           jornada_fecha: "2026-09-07",
           jornada_numero: 6,
           activo: true,

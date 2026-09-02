@@ -153,10 +153,11 @@ const matchesJornadaActiva = (
   fechaActiva: string,
   jornadaNumeroActiva: number,
   ramaActiva: JornadaRama,
+  inventarioId?: string,
 ): boolean =>
   String(data.jornada_fecha ?? "") === fechaActiva &&
   Number(data.jornada_numero ?? 0) === jornadaNumeroActiva &&
-  ramaFromInventario(data) === ramaActiva;
+  ramaFromInventario(data, inventarioId) === ramaActiva;
 
 /**
  * Cierra un inventario obsoleto: pone cantidad_final = 0 en productos
@@ -226,8 +227,8 @@ export const cerrarInventariosObsoletos = async (
 
   const obsoletos = snap.docs.filter((doc) => {
     const data = doc.data();
-    if (ramaFromInventario(data) !== rama) return false;
-    return !matchesJornadaActiva(data, fecha, jornadaNumero, rama);
+    if (ramaFromInventario(data, doc.id) !== rama) return false;
+    return !matchesJornadaActiva(data, fecha, jornadaNumero, rama, doc.id);
   });
 
   for (const doc of obsoletos) {
@@ -290,7 +291,7 @@ const getInventarioJornadaActivaFromFirestore = async (
     .get();
 
   const ofRama = snap.docs.filter(
-    (doc) => ramaFromInventario(doc.data()) === rama,
+    (doc) => ramaFromInventario(doc.data(), doc.id) === rama,
   );
 
   if (ofRama.length === 0) {

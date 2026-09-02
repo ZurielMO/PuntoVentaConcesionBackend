@@ -138,6 +138,33 @@ describe("matchesJornadaListFilter", () => {
     ).toBe(false);
   });
 
+  it("rechaza inventario femenil cuando el filtro es varonil", () => {
+    expect(
+      matchesJornadaListFilter(
+        {
+          jornadaId: "2026-09-07__J6",
+          inventarioId: "2026-09-07__J6__femenil__lv0Bp",
+          fecha: {
+            _seconds: Math.floor(Date.UTC(2026, 8, 7, 18, 0, 0) / 1000),
+          },
+        },
+        "2026-09-07__J6",
+      ),
+    ).toBe(false);
+  });
+
+  it("acepta venta femenil mal etiquetada cuando el filtro es femenil", () => {
+    expect(
+      matchesJornadaListFilter(
+        {
+          jornadaId: "2026-09-07__J6",
+          inventarioId: "2026-09-07__J6__femenil__lv0Bp",
+        },
+        "2026-09-07__J6__femenil",
+      ),
+    ).toBe(true);
+  });
+
   it("filtra el listado incluyendo palcos por día o inventario", () => {
     const rows = [
       {

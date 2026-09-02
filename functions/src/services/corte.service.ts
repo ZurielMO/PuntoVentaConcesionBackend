@@ -6,7 +6,12 @@ import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import * as comboService from "./combo.service";
 import * as inventarioService from "./inventario.service";
-import { buildJornadaId, ramaFromInventario } from "./asignacion-caja.service";
+import {
+  alignJornadaIdWithInventario,
+  buildJornadaId,
+  parseJornadaId,
+  ramaFromInventario,
+} from "./asignacion-caja.service";
 import { resolveJornadaActiva } from "./jornada.service";
 import type { OperationalListFilters } from "../utils/list-filters.util";
 import {
@@ -48,15 +53,32 @@ export const listCortes = async (filters: CorteListFilters = {}) => {
   let results = snap.docs.map(toData);
 
   if (filters.jornadaId) {
-    const prefix = `${filters.jornadaId}__`;
-    const fechaFromJornada = filters.jornadaId.match(
-      /^(\d{4}-\d{2}-\d{2})__J\d+$/,
-    )?.[1];
+    const jornadaId = String(filters.jornadaId).trim();
+    let fechaFromJornada: string | null = null;
+    let filterRama: "varonil" | "femenil" | null = null;
+    try {
+      const parsed = parseJornadaId(jornadaId);
+      fechaFromJornada = parsed.fecha;
+      filterRama = parsed.rama;
+    } catch {
+      fechaFromJornada = null;
+    }
     results = results.filter((row) => {
       const c = row as Record<string, unknown>;
-      if (c.jornadaId === filters.jornadaId) return true;
+      const aligned =
+        alignJornadaIdWithInventario(
+          c.jornadaId as string | undefined,
+          c.inventarioId as string | undefined,
+        ) ?? String(c.jornadaId ?? "");
+      if (aligned === jornadaId || c.jornadaId === jornadaId) return true;
       const invId = String(c.inventarioId ?? "");
-      if (invId.startsWith(prefix)) return true;
+      if (invId.startsWith(`${jornadaId}__`)) {
+        if (filterRama === "varonil") {
+          const rest = invId.slice(jornadaId.length + 2);
+          if (rest === "femenil" || rest.startsWith("femenil__")) return false;
+        }
+        return true;
+      }
       // Legacy cortes sin jornadaId/inventarioId: match by fecha
       if (
         fechaFromJornada &&
@@ -67,6 +89,15 @@ export const listCortes = async (filters: CorteListFilters = {}) => {
         return true;
       }
       return false;
+    });
+    results = results.map((row) => {
+      const c = row as Record<string, unknown> & { id: string };
+      const aligned = alignJornadaIdWithInventario(
+        c.jornadaId as string | undefined,
+        c.inventarioId as string | undefined,
+      );
+      if (!aligned || aligned === c.jornadaId) return row;
+      return { ...c, jornadaId: aligned };
     });
   }
 
@@ -1139,7 +1170,7 @@ export const cerrarCortePorConteo = async (
   const jornadaId = buildJornadaId(
     String(inv.jornada_fecha ?? ""),
     Number(inv.jornada_numero ?? 0),
-    ramaFromInventario(inv),
+    ramaFromInventario(inv, inv.id as string | undefined),
   );
 
   return createCorte(
@@ -1218,7 +1249,7 @@ export const cerrarCorte = async (
       jornadaId = buildJornadaId(
         String(inv.jornada_fecha ?? ""),
         Number(inv.jornada_numero ?? 0),
-        ramaFromInventario(inv),
+        ramaFromInventario(inv, inventarioId),
       );
     }
   } else {
