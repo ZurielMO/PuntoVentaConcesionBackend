@@ -35,6 +35,7 @@ import {
   isVipTerminalStatus,
 } from "./vip-state-machine.service";
 import { releaseVipStock, reserveVipStock } from "./vip-inventory.service";
+import { ramaFromInventario } from "../asignacion-caja.service";
 
 type DocData = FirebaseFirestore.DocumentData;
 type Actor = { actorId: string | null; actorRole: string };
@@ -240,17 +241,29 @@ const isOpenInventoryHeader = (data?: DocData | null): boolean =>
   Boolean(data) && data?.activo === true;
 
 /**
- * Tras jornadas varonil/femenil en paralelo, una sucursal puede tener más de un
- * header `activo=true`. Preferimos el de la fecha operativa VIP; si no hay, el más nuevo.
+ * Para el servicio a palcos (VIP), una sucursal puede tener headers `activo=true`
+ * para `varonil` y `femenil` en paralelo. Este checkout debe usar únicamente
+ * el inventario de `varonil`.
  */
 const pickPreferredOpenInventory = (
   docs: FirebaseFirestore.QueryDocumentSnapshot[],
 ): FirebaseFirestore.QueryDocumentSnapshot | null => {
-  const open = docs.filter((doc) => isOpenInventoryHeader(doc.data()));
-  if (!open.length) return null;
   const businessDate = getVipBusinessDate();
-  const sameDate = open.filter((doc) => toIsoBusinessDate(doc.data()?.jornada_fecha) === businessDate);
-  return pickNewestInventory(sameDate.length ? sameDate : open);
+
+  const varonilOpen = docs
+    .filter((doc) => isOpenInventoryHeader(doc.data()))
+    .filter((doc) => ramaFromInventario(doc.data(), doc.id) === "varonil");
+
+  if (!varonilOpen.length) return null;
+
+  // Preferir inventario cuya jornada_fecha coincide con el día calendario,
+  // pero si no hay (el inventario del partido se abre días antes),
+  // usar cualquier inventario varonil activo. `activo` es el control real.
+  const sameDate = varonilOpen.filter(
+    (doc) => toIsoBusinessDate(doc.data()?.jornada_fecha) === businessDate,
+  );
+
+  return pickNewestInventory(sameDate.length ? sameDate : varonilOpen);
 };
 
 /**
@@ -1078,15 +1091,25 @@ const finalizePaidOrder = async (
       if (reservation.data()?.status === VipReservationStatus.ACTIVE) {
         tx.update(reservation.ref, { status: VipReservationStatus.CONFIRMED, updatedAt: now });
         const data = reservation.data() || {};
+        const quantity = Number(data.quantity || 0);
+        const stockRef = col(COLLECTIONS.INVENTARIOS).doc(String(data.inventoryId))
+          .collection(SUBCOLLECTIONS.PRODUCTOS).doc(String(data.productId));
+        const stockDoc = await tx.get(stockRef);
+        const current = Number(
+          stockDoc.data()?.cantidad_final ?? stockDoc.data()?.cantidad_inicial ?? 0,
+        );
         tx.create(
           col(COLLECTIONS.INVENTARIOS).doc(String(data.inventoryId))
             .collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(),
           {
             tipo: "VENTA",
             producto_id: data.productId,
-            cantidad: -Number(data.quantity || 0),
-            cantidad_anterior: null,
-            cantidad_nueva: null,
+            cantidad: -quantity,
+            // En VIP el stock ya se decrementó durante la reserva (RESERVA_VIP).
+            // Al confirmar pago no se vuelve a tocar el inventario, pero la bitácora
+            // debe reflejar correctamente el "antes" y "después" conceptual.
+            cantidad_anterior: current + quantity,
+            cantidad_nueva: current,
             sucursal_id: data.sucursalId,
             ventaId: order.id,
             motivo: "Reserva VIP confirmada por pago Stripe",
