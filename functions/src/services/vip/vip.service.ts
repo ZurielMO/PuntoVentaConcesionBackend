@@ -1052,6 +1052,24 @@ const finalizePaidOrder = async (
       if (!inventoryId || inventoryHeaders.has(inventoryId)) continue;
       inventoryHeaders.set(inventoryId, await tx.get(col(COLLECTIONS.INVENTARIOS).doc(inventoryId)));
     }
+    // Firestore exige todas las lecturas antes de cualquier escritura.
+    const stockDocs = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    for (const reservation of reservationDocs) {
+      const data = reservation.data() || {};
+      if (data.status !== VipReservationStatus.ACTIVE) continue;
+      const inventoryId = String(data.inventoryId || "");
+      const productId = String(data.productId || "");
+      if (!inventoryId || !productId) continue;
+      const stockKey = `${inventoryId}/${productId}`;
+      if (stockDocs.has(stockKey)) continue;
+      stockDocs.set(
+        stockKey,
+        await tx.get(
+          col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
+            .collection(SUBCOLLECTIONS.PRODUCTOS).doc(productId),
+        ),
+      );
+    }
     const now = Timestamp.now();
     const usesInventory = order.items.some((item) => Boolean(item.inventoryId));
     const reservationUnavailable = usesInventory && (
@@ -1092,14 +1110,14 @@ const finalizePaidOrder = async (
         tx.update(reservation.ref, { status: VipReservationStatus.CONFIRMED, updatedAt: now });
         const data = reservation.data() || {};
         const quantity = Number(data.quantity || 0);
-        const stockRef = col(COLLECTIONS.INVENTARIOS).doc(String(data.inventoryId))
-          .collection(SUBCOLLECTIONS.PRODUCTOS).doc(String(data.productId));
-        const stockDoc = await tx.get(stockRef);
+        const inventoryId = String(data.inventoryId || "");
+        const productId = String(data.productId || "");
+        const stockDoc = stockDocs.get(`${inventoryId}/${productId}`);
         const current = Number(
-          stockDoc.data()?.cantidad_final ?? stockDoc.data()?.cantidad_inicial ?? 0,
+          stockDoc?.data()?.cantidad_final ?? stockDoc?.data()?.cantidad_inicial ?? 0,
         );
         tx.create(
-          col(COLLECTIONS.INVENTARIOS).doc(String(data.inventoryId))
+          col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
             .collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(),
           {
             tipo: "VENTA",
