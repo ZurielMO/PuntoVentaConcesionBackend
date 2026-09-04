@@ -1,6 +1,8 @@
 import {
+  applyVipServiceMarkupMinor,
   buildTrackingToken,
   getVipBusinessDate,
+  getVipServiceFeePercent,
   minorToMoney,
   moneyToMinor,
   resolveVipReturnUrls,
@@ -57,6 +59,14 @@ describe("VIP configuration helpers", () => {
       successUrl: "http://localhost:9002/servicio-palcos/pago/exito?cs={CHECKOUT_SESSION_ID}",
       cancelUrl: "http://localhost:9002/servicio-palcos/pago/cancelado",
     });
+  });
+
+  it("applies a 15% guest markup in minor units", () => {
+    delete process.env.VIP_SERVICE_FEE_PERCENT;
+    expect(getVipServiceFeePercent()).toBe(15);
+    expect(applyVipServiceMarkupMinor(10000)).toBe(11500);
+    expect(applyVipServiceMarkupMinor(11500)).toBe(13225);
+    expect(minorToMoney(applyVipServiceMarkupMinor(moneyToMinor(100)))).toBe(115);
   });
 
   it("uses America/Mexico_City calendar date, not jornada RTDB", () => {

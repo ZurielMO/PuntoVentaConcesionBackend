@@ -119,3 +119,19 @@ export const verifyTrackingToken = (orderId: string, candidate: string): boolean
 
 export const moneyToMinor = (value: number): number => Math.round(value * 100);
 export const minorToMoney = (value: number): number => Number((value / 100).toFixed(2));
+
+export const DEFAULT_VIP_SERVICE_FEE_PERCENT = 15;
+
+export const getVipServiceFeePercent = (): number => {
+  const parsed = Number(process.env.VIP_SERVICE_FEE_PERCENT ?? DEFAULT_VIP_SERVICE_FEE_PERCENT);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    return DEFAULT_VIP_SERVICE_FEE_PERCENT;
+  }
+  return parsed;
+};
+
+/** Absorbe el cargo de servicio en el precio guest (centavos). */
+export const applyVipServiceMarkupMinor = (rawMinor: number): number => {
+  if (!Number.isFinite(rawMinor) || rawMinor <= 0) return Math.max(0, Math.round(rawMinor || 0));
+  return Math.round((rawMinor * (100 + getVipServiceFeePercent())) / 100);
+};

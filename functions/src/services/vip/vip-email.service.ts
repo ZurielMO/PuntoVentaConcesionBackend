@@ -41,22 +41,14 @@ const itemsHtml = (order: VipOrder): string =>
     )
     .join("");
 
-const totalsHtml = (order: VipOrder): string => {
-  const tipRow =
-    Number(order.tip || 0) > 0
-      ? `<tr><td>Propina</td><td style="text-align:right;">${money(order.tip)}</td></tr>`
-      : "";
-  return `
+const totalsHtml = (order: VipOrder): string => `
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px;color:#4A5568;">
-      <tr><td>Subtotal</td><td style="text-align:right;">${money(order.subtotal)}</td></tr>
-      <tr><td>Cargo por servicio</td><td style="text-align:right;">${money(order.serviceFee)}</td></tr>
-      ${tipRow}
+      <tr><td>Productos</td><td style="text-align:right;">${money(order.subtotal)}</td></tr>
       <tr>
         <td style="padding-top:10px;font-weight:700;color:#007A53;">Total</td>
         <td style="padding-top:10px;text-align:right;font-weight:700;color:#007A53;">${money(order.total)}</td>
       </tr>
     </table>`;
-};
 
 const deliveryLine = (order: VipOrder): string => {
   const zona = order.delivery?.zona || "";

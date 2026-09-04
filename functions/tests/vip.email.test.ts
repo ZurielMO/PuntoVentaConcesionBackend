@@ -94,7 +94,7 @@ describe("VIP Brevo emails", () => {
     process.env = originalEnv;
   });
 
-  it("sends a paid confirmation with order number, palco and service fee", async () => {
+  it("sends a paid confirmation with order number, palco and total", async () => {
     const { sendVipOrderPaidEmail } = await import("../src/services/vip/vip-email.service");
     await expect(sendVipOrderPaidEmail(sampleOrder())).resolves.toBe(true);
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
@@ -112,8 +112,9 @@ describe("VIP Brevo emails", () => {
     expect(html).toContain("Palco 12");
     expect(html).toContain("Poniente");
     expect(html).toContain("Hamburguesa");
-    expect(html).toContain("Cargo por servicio");
-    expect(html).toContain("$20.00 MXN");
+    expect(html).toContain("Productos");
+    expect(html).not.toContain("Cargo por servicio");
+    expect(html).not.toContain("Propina");
     expect(html).toContain("$255.00 MXN");
   });
 

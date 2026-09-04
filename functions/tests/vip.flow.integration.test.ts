@@ -199,7 +199,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       payment_status: "unpaid",
       status: "expired",
     });
-    mockRefundCreate.mockResolvedValue({ id: "re_flow", amount: 25500 });
+    mockRefundCreate.mockResolvedValue({ id: "re_flow", amount: 26450 });
     seed();
   });
 
@@ -215,7 +215,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
   it("creates one server-priced order and atomically reserves real shared stock", async () => {
     const { createCheckout } = await import("../src/services/vip/vip.service");
     const result = await createCheckout(checkoutInput(), "checkout-key-001");
-    expect(result.total).toBe(255); // (100 + 10 + 5) * 2 + 20 + 5
+    expect(result.total).toBe(264.5); // (100 + 10 + 5) * 1.15 * 2, sin cargo fijo ni propina
     expect(mockRows.get(`vip_orders/${result.orderId}`)?.delivery).toMatchObject({
       zona: "Poniente",
       palco: "124",
@@ -224,7 +224,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
     expect(mockSessionCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        line_items: [expect.objectContaining({ price_data: expect.objectContaining({ unit_amount: 25500 }) })],
+        line_items: [expect.objectContaining({ price_data: expect.objectContaining({ unit_amount: 26450 }) })],
         cancel_url: expect.stringMatching(/cs=\{CHECKOUT_SESSION_ID\}/),
       }),
       expect.objectContaining({ idempotencyKey: expect.stringMatching(/^vip_checkout_/) }),
@@ -239,7 +239,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     expect(catalog[0]).toMatchObject({ name: "Restaurante Real" });
     expect(catalog[0].products[0]).toMatchObject({
       name: "Hamburguesa",
-      price: 100,
+      price: 115,
       available: true,
     });
     expect(catalog[0].porcentajeComision).toBeUndefined();
@@ -262,7 +262,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const catalog = await listCatalog();
     expect(catalog[0].products[0]).toMatchObject({
       name: "Hamburguesa",
-      price: 100,
+      price: 115,
       available: true,
     });
     await expect(createCheckout(checkoutInput(), "checkout-no-jornada")).resolves.toMatchObject({
@@ -389,7 +389,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     mockRows.set("inventarios/inv-later/productos/p1", { cantidad_final: 8, precio_jornada: 110 });
     const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 110 });
+    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 126.5 });
     await createCheckout(checkoutInput(), "checkout-latest-jornada");
     expect(mockRows.get("inventarios/inv-later/productos/p1")?.cantidad_final).toBe(6);
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
@@ -448,7 +448,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
         object: "checkout.session",
         payment_status: "paid",
         payment_intent: "pi_flow",
-        amount_total: 25500,
+        amount_total: 26450,
         currency: "mxn",
         metadata: { orderId: checkout.orderId, source: "VIP" },
       } },
@@ -504,7 +504,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       id: "evt_late_paid", object: "event", api_version: "2025-02-24.acacia", created: 2,
       data: { object: {
         id: "cs_flow", object: "checkout.session", payment_status: "paid", payment_intent: "pi_late",
-        amount_total: 25500, currency: "mxn", metadata: { orderId: checkout.orderId },
+        amount_total: 26450, currency: "mxn", metadata: { orderId: checkout.orderId },
       } },
       livemode: false, pending_webhooks: 1, request: null, type: "checkout.session.completed",
     });
@@ -604,7 +604,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
         object: "checkout.session",
         payment_status: "paid",
         payment_intent: "pi_flow",
-        amount_total: 25500,
+        amount_total: 26450,
         currency: "mxn",
         metadata: { orderId, source: "VIP" },
       } },
@@ -676,7 +676,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     mockRows.delete("inventarios/inv-1");
     const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 999, available: false });
+    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 1148.85, available: false });
     await expect(createCheckout(checkoutInput(), "checkout-no-inventory")).rejects.toMatchObject({
       code: "VIP_OUT_OF_STOCK",
     });
@@ -689,7 +689,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const catalog = await listCatalog();
     expect(catalog).toHaveLength(1);
     expect(catalog[0]).toMatchObject({ name: "Restaurante Real" });
-    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 100, available: true });
+    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 115, available: true });
     const input = checkoutInput();
     input.items[0].selectedOptions = [];
     input.items[0].extras = [];
@@ -776,7 +776,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       id: "cs_flow",
       payment_status: "paid",
       payment_intent: "pi_confirm",
-      amount_total: 25500,
+      amount_total: 26450,
       currency: "mxn",
       metadata: { orderId: checkout.orderId },
     });
@@ -870,7 +870,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const input = checkoutInput();
     input.items.push({ productId: "p2", quantity: 1, selectedOptions: [], extras: [] });
     const checkout = await createCheckout(input, "checkout-multi-001");
-    expect(checkout.total).toBe(275);
+    expect(checkout.total).toBe(287.5);
     const order = mockRows.get(`vip_orders/${checkout.orderId}`);
     expect(order?.concessionIds).toEqual(expect.arrayContaining(["c1", "c2"]));
     expect(order?.fulfillments).toHaveLength(2);
@@ -893,7 +893,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     mockRows.set("inventarios/inv-s1b/productos/p1", { cantidad_final: 7, precio_jornada: 120 });
     const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 120 });
+    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 138 });
     const checkout = await createCheckout(checkoutInput(), "checkout-other-local");
     expect(mockRows.get("inventarios/inv-s1b/productos/p1")?.cantidad_final).toBe(5);
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);

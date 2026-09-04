@@ -4,6 +4,7 @@ import type Stripe from "stripe";
 import { firestorePos } from "../../config/firebase";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../../config/firestore.constants";
 import {
+  applyVipServiceMarkupMinor,
   buildTrackingToken,
   getVipBusinessDate,
   getVipCentralZonePassword,
@@ -432,6 +433,11 @@ const resolveConfiguredSelection = (
   });
 };
 
+const withServiceMarkup = <T extends { price: number; priceMinor: number }>(row: T): T => {
+  const priceMinor = applyVipServiceMarkupMinor(row.priceMinor);
+  return { ...row, priceMinor, price: minorToMoney(priceMinor) };
+};
+
 const mergeDraws = (draws: ResolvedStockDraw[]): ResolvedStockDraw[] => {
   const merged = new Map<string, ResolvedStockDraw>();
   for (const draw of draws) {
@@ -455,6 +461,7 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
   const items: VipOrderItemSnapshot[] = [];
   const draws: ResolvedStockDraw[] = [];
   const fulfillmentMap = new Map<string, VipOrder["fulfillments"][number]>();
+  let rawSubtotalMinor = 0;
 
   for (const [index, requested] of input.items.entries()) {
     const product = await requireActiveDoc(
@@ -474,8 +481,10 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
       "VIP_PRODUCT_DISABLED",
       "La concesión del producto no está activa.",
     );
-    const options = resolveConfiguredSelection(requested.selectedOptions, productConfig.options, "Opción");
-    const extras = resolveConfiguredSelection(requested.extras, productConfig.extras, "Extra");
+    const rawOptions = resolveConfiguredSelection(requested.selectedOptions, productConfig.options, "Opción");
+    const rawExtras = resolveConfiguredSelection(requested.extras, productConfig.extras, "Extra");
+    const options = rawOptions.map(withServiceMarkup);
+    const extras = rawExtras.map(withServiceMarkup);
     const addOnDraws = [...options, ...extras]
       .filter((addOn) => addOn.inventoryProductId)
       .map((addOn) => ({
@@ -494,9 +503,12 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
     if (!Number.isFinite(configuredPrice) || configuredPrice < 0) {
       throw new ApiError(500, "El producto tiene un precio inválido.", false, "VIP_INVALID_CONFIG");
     }
-    const unitPriceMinor = moneyToMinor(configuredPrice) +
+    const rawUnitPriceMinor = moneyToMinor(configuredPrice) +
+      [...rawOptions, ...rawExtras].reduce((sum, row) => sum + row.priceMinor, 0);
+    const unitPriceMinor = applyVipServiceMarkupMinor(moneyToMinor(configuredPrice)) +
       [...options, ...extras].reduce((sum, row) => sum + row.priceMinor, 0);
     const lineTotalMinor = unitPriceMinor * requested.quantity;
+    const rawLineTotalMinor = rawUnitPriceMinor * requested.quantity;
     const itemId = `${requested.productId}-${index + 1}`;
     const snapshot: VipOrderItemSnapshot = {
       id: itemId,
@@ -515,6 +527,7 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
       lineTotalMinor,
     };
     items.push(snapshot);
+    rawSubtotalMinor += rawLineTotalMinor;
     draws.push({ inventoryId, sucursalId, concessionId, productId: requested.productId, quantity: requested.quantity });
     for (const addOn of addOnDraws) {
       draws.push({
@@ -548,15 +561,7 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
   }
 
   const subtotalMinor = items.reduce((sum, item) => sum + item.lineTotalMinor, 0);
-  const configuredServiceFeeMinor = context.service.serviceFeeMinor;
-  const fallbackServiceFeeMinor = moneyToMinor(Number(process.env.VIP_SERVICE_FEE || 20));
-  const serviceFeeMinor = configuredServiceFeeMinor !== undefined
-    ? Number(configuredServiceFeeMinor)
-    : fallbackServiceFeeMinor;
-  if (!Number.isInteger(serviceFeeMinor) || serviceFeeMinor < 0) {
-    throw new ApiError(503, "El cargo de servicio no está configurado correctamente.", true, "VIP_NOT_CONFIGURED");
-  }
-  const tipMinor = moneyToMinor(input.tip);
+  const serviceFeeMinor = Math.max(0, subtotalMinor - rawSubtotalMinor);
   return {
     context,
     delivery: {
@@ -572,8 +577,8 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
     draws: mergeDraws(draws),
     subtotalMinor,
     serviceFeeMinor,
-    tipMinor,
-    totalMinor: subtotalMinor + serviceFeeMinor + tipMinor,
+    tipMinor: 0,
+    totalMinor: subtotalMinor,
   };
 };
 
@@ -1539,19 +1544,25 @@ const toCatalogProduct = (
     name: String(product.nombre || productDoc.id),
     unit: String(product.unidad_medida || "pieza"),
     images: normalizedProductImages,
-    price: minorToMoney(moneyToMinor(price)),
+    price: minorToMoney(applyVipServiceMarkupMinor(moneyToMinor(price))),
     currency: getVipCurrency(),
     available: Number.isFinite(availableQuantity) && availableQuantity > 0,
     options: resolveConfiguredSelection(
       Array.isArray(vip.options) ? vip.options.filter((row: DocData) => row?.active !== false).map((row: DocData) => String(row.id)) : [],
       vip.options,
       "Opción",
-    ).map(({ id, name, price: optionPrice }) => ({ id, name, price: optionPrice })),
+    ).map((row) => {
+      const marked = withServiceMarkup(row);
+      return { id: marked.id, name: marked.name, price: marked.price };
+    }),
     extras: resolveConfiguredSelection(
       Array.isArray(vip.extras) ? vip.extras.filter((row: DocData) => row?.active !== false).map((row: DocData) => String(row.id)) : [],
       vip.extras,
       "Extra",
-    ).map(({ id, name, price: extraPrice }) => ({ id, name, price: extraPrice })),
+    ).map((row) => {
+      const marked = withServiceMarkup(row);
+      return { id: marked.id, name: marked.name, price: marked.price };
+    }),
   };
 };
 
