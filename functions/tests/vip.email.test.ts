@@ -113,7 +113,8 @@ describe("VIP Brevo emails", () => {
     expect(html).toContain("Poniente");
     expect(html).toContain("Hamburguesa");
     expect(html).toContain("Productos");
-    expect(html).not.toContain("Cargo por servicio");
+    expect(html).toContain("Cargo por servicio");
+    expect(html).not.toContain("15%");
     expect(html).not.toContain("Propina");
     expect(html).toContain("$255.00 MXN");
   });

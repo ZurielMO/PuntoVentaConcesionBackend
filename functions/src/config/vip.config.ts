@@ -130,8 +130,8 @@ export const getVipServiceFeePercent = (): number => {
   return parsed;
 };
 
-/** Absorbe el cargo de servicio en el precio guest (centavos). */
-export const applyVipServiceMarkupMinor = (rawMinor: number): number => {
-  if (!Number.isFinite(rawMinor) || rawMinor <= 0) return Math.max(0, Math.round(rawMinor || 0));
-  return Math.round((rawMinor * (100 + getVipServiceFeePercent())) / 100);
+/** Cargo por servicio en centavos sobre el subtotal crudo. */
+export const applyVipServiceFeeMinor = (rawSubtotalMinor: number): number => {
+  if (!Number.isFinite(rawSubtotalMinor) || rawSubtotalMinor <= 0) return 0;
+  return Math.round((rawSubtotalMinor * getVipServiceFeePercent()) / 100);
 };

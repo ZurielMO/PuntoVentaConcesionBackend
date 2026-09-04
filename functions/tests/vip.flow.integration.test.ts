@@ -215,7 +215,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
   it("creates one server-priced order and atomically reserves real shared stock", async () => {
     const { createCheckout } = await import("../src/services/vip/vip.service");
     const result = await createCheckout(checkoutInput(), "checkout-key-001");
-    expect(result.total).toBe(264.5); // (100 + 10 + 5) * 1.15 * 2, sin cargo fijo ni propina
+    expect(result.total).toBe(264.5); // (100 + 10 + 5) * 2 + cargo 34.50, sin propina
     expect(mockRows.get(`vip_orders/${result.orderId}`)?.delivery).toMatchObject({
       zona: "Poniente",
       palco: "124",
@@ -239,7 +239,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     expect(catalog[0]).toMatchObject({ name: "Restaurante Real" });
     expect(catalog[0].products[0]).toMatchObject({
       name: "Hamburguesa",
-      price: 115,
+      price: 100,
       available: true,
     });
     expect(catalog[0].porcentajeComision).toBeUndefined();
@@ -262,7 +262,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const catalog = await listCatalog();
     expect(catalog[0].products[0]).toMatchObject({
       name: "Hamburguesa",
-      price: 115,
+      price: 100,
       available: true,
     });
     await expect(createCheckout(checkoutInput(), "checkout-no-jornada")).resolves.toMatchObject({
@@ -389,7 +389,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     mockRows.set("inventarios/inv-later/productos/p1", { cantidad_final: 8, precio_jornada: 110 });
     const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 126.5 });
+    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 110 });
     await createCheckout(checkoutInput(), "checkout-latest-jornada");
     expect(mockRows.get("inventarios/inv-later/productos/p1")?.cantidad_final).toBe(6);
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
@@ -676,7 +676,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     mockRows.delete("inventarios/inv-1");
     const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 1148.85, available: false });
+    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 999, available: false });
     await expect(createCheckout(checkoutInput(), "checkout-no-inventory")).rejects.toMatchObject({
       code: "VIP_OUT_OF_STOCK",
     });
@@ -689,7 +689,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const catalog = await listCatalog();
     expect(catalog).toHaveLength(1);
     expect(catalog[0]).toMatchObject({ name: "Restaurante Real" });
-    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 115, available: true });
+    expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 100, available: true });
     const input = checkoutInput();
     input.items[0].selectedOptions = [];
     input.items[0].extras = [];
@@ -893,7 +893,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     mockRows.set("inventarios/inv-s1b/productos/p1", { cantidad_final: 7, precio_jornada: 120 });
     const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 138 });
+    expect(catalog[0].products[0]).toMatchObject({ available: true, price: 120 });
     const checkout = await createCheckout(checkoutInput(), "checkout-other-local");
     expect(mockRows.get("inventarios/inv-s1b/productos/p1")?.cantidad_final).toBe(5);
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);

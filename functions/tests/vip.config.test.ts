@@ -1,5 +1,5 @@
 import {
-  applyVipServiceMarkupMinor,
+  applyVipServiceFeeMinor,
   buildTrackingToken,
   getVipBusinessDate,
   getVipServiceFeePercent,
@@ -61,12 +61,12 @@ describe("VIP configuration helpers", () => {
     });
   });
 
-  it("applies a 15% guest markup in minor units", () => {
+  it("calculates the service fee as 15% of the raw subtotal", () => {
     delete process.env.VIP_SERVICE_FEE_PERCENT;
     expect(getVipServiceFeePercent()).toBe(15);
-    expect(applyVipServiceMarkupMinor(10000)).toBe(11500);
-    expect(applyVipServiceMarkupMinor(11500)).toBe(13225);
-    expect(minorToMoney(applyVipServiceMarkupMinor(moneyToMinor(100)))).toBe(115);
+    expect(applyVipServiceFeeMinor(23000)).toBe(3450);
+    expect(applyVipServiceFeeMinor(10000)).toBe(1500);
+    expect(minorToMoney(applyVipServiceFeeMinor(moneyToMinor(230)))).toBe(34.5);
   });
 
   it("uses America/Mexico_City calendar date, not jornada RTDB", () => {

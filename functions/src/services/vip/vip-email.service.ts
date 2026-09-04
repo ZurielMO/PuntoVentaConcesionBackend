@@ -44,6 +44,7 @@ const itemsHtml = (order: VipOrder): string =>
 const totalsHtml = (order: VipOrder): string => `
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;font-size:14px;color:#4A5568;">
       <tr><td>Productos</td><td style="text-align:right;">${money(order.subtotal)}</td></tr>
+      <tr><td>Cargo por servicio</td><td style="text-align:right;">${money(order.serviceFee)}</td></tr>
       <tr>
         <td style="padding-top:10px;font-weight:700;color:#007A53;">Total</td>
         <td style="padding-top:10px;text-align:right;font-weight:700;color:#007A53;">${money(order.total)}</td>
