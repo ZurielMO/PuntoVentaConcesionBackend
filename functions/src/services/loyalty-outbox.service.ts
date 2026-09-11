@@ -1,21 +1,20 @@
 /**
- * Cola de acumulaciones de puntos que no pudieron llegar al ledger de Club León.
+ * Cola de acumulaciones de puntos que quedaron sin acreditar.
  *
- * Antes, cuando BackendCL fallaba, el POS escribía `usuariosApp.puntosActuales`
- * por su cuenta. Eso creaba un segundo saldo que el motor oficial de loyalty
- * pisaba en cuanto otra fuente (racha, ecommerce) recalculaba desde
- * `loyalty_wallets`, y los puntos del POS desaparecían.
+ * Data de cuando los puntos dependían de un servicio externo: si ese servicio
+ * no respondía, la venta terminaba igual y los puntos quedaban aquí como
+ * operación PENDING, en la base del propio POS (`puntoventacl/concesiones`).
  *
- * Ahora la venta termina igual, pero los puntos quedan como operación PENDING
- * en la base del propio POS (`puntoventacl/concesiones`, que no depende de las
- * credenciales de app-oficial) y se reintegran al ledger oficial cuando
- * BackendCL vuelve. La clave `pos-sale:<ventaId>` es la misma que usa la
- * acumulación en vivo y la reparación histórica, así que reprocesar mil veces
- * acredita una sola.
+ * Ahora el ledger vive en Firestore y la acumulación se acredita en la misma
+ * petición, así que no se encolan operaciones nuevas. La cola se conserva para
+ * poder acreditar lo que quedó pendiente, vía `/loyalty/pendientes/reprocesar`.
+ * Reprocesar es seguro cuantas veces haga falta: la idempotencia por venta la
+ * impone el ledger, no este registro.
  */
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
+import { buildPosSaleExternalTxnId } from "./loyalty-ledger.service";
 
 export const PENDING_LOYALTY_STATUS = {
   PENDING: "PENDING",
@@ -58,11 +57,12 @@ export interface PendingLoyaltyAccrual {
 }
 
 /**
- * Namespace canónico de la venta dentro del ledger oficial. Debe coincidir
- * carácter por carácter con `buildPosSaleExternalTxnId` de BackendCL.
+ * Namespace canónico de la venta dentro del ledger. Lo define el ledger porque
+ * es la clave con la que se escribe el índice externo que compartimos con
+ * BackendCL; aquí solo se reexporta para no tener dos definiciones que puedan
+ * separarse y dejar de deduplicar.
  */
-export const buildPosSaleIdempotencyKey = (ventaId: string): string =>
-  `pos-sale:${ventaId.trim().replace(/\s+/g, " ")}`;
+export const buildPosSaleIdempotencyKey = buildPosSaleExternalTxnId;
 
 const buildDocId = (ventaId: string): string =>
   `pos_acc_${ventaId.trim().replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120)}`;

@@ -55,15 +55,15 @@ export const assignVentaPoints = asyncHandler(
       data: result,
       message:
         result.status === "PENDING"
-          ? "Venta registrada. Los puntos se acreditarán en cuanto Club León esté disponible"
+          ? "Venta registrada. Los puntos quedaron pendientes de acreditar"
           : "Puntos asignados correctamente",
     });
   },
 );
 
 /**
- * Reintegra al ledger oficial las acumulaciones que quedaron encoladas por una
- * caída de BackendCL. Seguro de reejecutar: cada venta se acredita una sola vez.
+ * Acredita las acumulaciones que quedaron encoladas sin llegar al ledger.
+ * Seguro de reejecutar: cada venta se acredita una sola vez.
  */
 export const reprocessPendingLoyalty = asyncHandler(
   async (req: Request, res: Response) => {

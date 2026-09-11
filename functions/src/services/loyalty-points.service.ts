@@ -1,22 +1,27 @@
-import axios from "axios";
-import { FieldValue } from "firebase-admin/firestore";
-import { firestoreApp } from "../config/app.firebase";
-import {
-  buildBackendClApiUrl,
-  getBackendClBearerToken,
-  invalidateBackendClAuthCache,
-} from "./backendcl-auth.service";
+/**
+ * Reglas de negocio de los puntos del POS.
+ *
+ * El saldo y el historial son los de Club León (`loyalty_wallets` y
+ * `loyalty_transactions`) y se mueven a través de `loyalty-ledger.service`, que
+ * garantiza atomicidad e idempotencia por venta y comparte el ledger con
+ * BackendCL. Este módulo aporta el cálculo (10% al acumular, 10 puntos = $1 al
+ * canjear) y la forma de las respuestas que consumen controladores y ventas.
+ */
 import { ApiError } from "../utils/api-error";
 import {
+  accrueSalePoints,
+  cancelSalePointsHold,
+  confirmSalePointsHold,
+  holdSalePoints,
+  readAvailablePoints,
+  resolveUsuarioAppRef,
+} from "./loyalty-ledger.service";
+import {
   buildPosSaleIdempotencyKey,
-  enqueuePendingAccrual,
   listPendingAccruals,
   markPendingAccrualCompleted,
   markPendingAccrualFailed,
 } from "./loyalty-outbox.service";
-
-const USUARIOS_APP_COLLECTION = "usuariosApp";
-const MOVIMIENTOS_PUNTOS_SUBCOLLECTION = "movimientos_puntos";
 
 export interface ClubMemberData {
   id: string;
@@ -26,9 +31,9 @@ export interface ClubMemberData {
 }
 
 /**
- * `APPLIED`           la venta acaba de entrar al ledger oficial.
+ * `APPLIED`           la venta acaba de entrar al ledger.
  * `ALREADY_PROCESSED` ya estaba en el ledger; no se movió ningún saldo.
- * `PENDING`           BackendCL no respondió; quedó encolada para reproceso.
+ * `PENDING`           reservado para las acumulaciones que quedaron en la cola.
  */
 export type AssignPointsBySaleStatus =
   | "APPLIED"
@@ -99,195 +104,6 @@ export const calcularCanjePuntos = (params: {
   return { puntosUsados, montoPuntos, restante };
 };
 
-const backendClHeaders = async () => ({
-  Authorization: `Bearer ${await getBackendClBearerToken()}`,
-  "Content-Type": "application/json",
-  Accept: "application/json",
-});
-
-const mapAxiosError = (error: unknown, fallbackMessage: string): ApiError => {
-  if (axios.isAxiosError(error)) {
-    const status = error.response?.status;
-    const data = error.response?.data as
-      | { message?: string; code?: string; detail?: string; title?: string }
-      | undefined;
-    const problemCode = data?.code;
-    const message =
-      data?.detail ?? data?.message ?? data?.title ?? fallbackMessage;
-
-    if (status === 401) {
-      return new ApiError(
-        502,
-        "Token de BackendCL inválido o expirado",
-        true,
-        "BACKENDCL_AUTH_FAILED",
-      );
-    }
-    if (
-      status === 403 ||
-      problemCode === "FORBIDDEN" ||
-      problemCode === "INVALID_SCOPE"
-    ) {
-      return new ApiError(
-        502,
-        "La cuenta BackendCL no tiene permisos para operaciones de puntos (requiere rol EMPLEADO, CONCESION_VENDEDOR o ADMIN en Club León)",
-        true,
-        "BACKENDCL_FORBIDDEN",
-      );
-    }
-    if (status === 404) {
-      return new ApiError(404, "Socio no encontrado", true, "MEMBER_NOT_FOUND");
-    }
-    if (status != null && status >= 400 && status < 500) {
-      return new ApiError(status, message, true, "BACKENDCL_CLIENT_ERROR");
-    }
-  }
-
-  return new ApiError(502, fallbackMessage, true, "BACKENDCL_UNAVAILABLE");
-};
-
-const withBackendClAuthRetry = async <T>(
-  request: (headers: Record<string, string>) => Promise<T>,
-): Promise<T> => {
-  const buildHeaders = async () => ({
-    ...(await backendClHeaders()),
-  });
-
-  try {
-    return await request(await buildHeaders());
-  } catch (error) {
-    if (
-      axios.isAxiosError(error) &&
-      error.response?.status === 401 &&
-      !process.env.BACKENDCL_BEARER_TOKEN?.trim()
-    ) {
-      invalidateBackendClAuthCache();
-      return request(await buildHeaders());
-    }
-    throw error;
-  }
-};
-
-const DEFAULT_LOYALTY_BASE_PATH = "/api/loyalty/internal/v1";
-const PARTNER_LOYALTY_BASE_PATH = "/api/loyalty/v1";
-
-const getLoyaltyBasePath = (): string => {
-  const configured = process.env.BACKENDCL_LOYALTY_BASE_PATH?.trim();
-  const base = configured || DEFAULT_LOYALTY_BASE_PATH;
-  return `/${base.replace(/^\/+|\/+$/g, "")}`;
-};
-
-/**
- * En BackendCL, `/api/loyalty/v1` lo intercepta primero el router OAuth de
- * partners y responde 401 a los JWT de sesión; las rutas de sesión viven en
- * `/api/loyalty/internal/v1`. Si el namespace configurado responde 401 o 404
- * reintentamos una vez con el otro, para sobrevivir a que BackendCL vuelva a
- * mover el prefijo sin necesidad de redesplegar el POS.
- */
-const withLoyaltyNamespaceRetry = async <T>(
-  suffix: string,
-  request: (url: string, headers: Record<string, string>) => Promise<T>,
-): Promise<T> => {
-  const primary = getLoyaltyBasePath();
-  const alternate =
-    primary === PARTNER_LOYALTY_BASE_PATH
-      ? DEFAULT_LOYALTY_BASE_PATH
-      : PARTNER_LOYALTY_BASE_PATH;
-
-  try {
-    return await withBackendClAuthRetry((headers) =>
-      request(buildBackendClApiUrl(`${primary}${suffix}`), headers),
-    );
-  } catch (error) {
-    const status = axios.isAxiosError(error)
-      ? error.response?.status
-      : undefined;
-    if (status !== 401 && status !== 404) {
-      throw error;
-    }
-    console.warn("[loyalty] namespace alterno tras error", {
-      suffix,
-      primary,
-      alternate,
-      status,
-    });
-    return withBackendClAuthRetry((headers) =>
-      request(buildBackendClApiUrl(`${alternate}${suffix}`), headers),
-    );
-  }
-};
-
-const extractMember = (payload: unknown, memberId: string): ClubMemberData => {
-  const root = payload as {
-    data?: Record<string, unknown>;
-    success?: boolean;
-  };
-  const data = root.data ?? (payload as Record<string, unknown>);
-
-  const nombre =
-    (data.nombre as string | undefined)?.trim() ||
-    (data.displayName as string | undefined)?.trim() ||
-    "Socio";
-  const email = (data.email as string | undefined)?.trim() ?? "";
-  const puntosActuales = Number(data.puntosActuales ?? 0);
-
-  return {
-    id: (data.id as string | undefined)?.trim()
-      || (data.uid as string | undefined)?.trim()
-      || memberId,
-    nombre,
-    email,
-    puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
-  };
-};
-
-const buildPosRedemptionMovementDocId = (ventaId: string): string =>
-  `pos_${ventaId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120)}`;
-
-export const recordPosRedemptionMovement = async (params: {
-  memberId: string;
-  ventaId: string;
-  puntosCanjeados: number;
-  saldoNuevo: number;
-}): Promise<void> => {
-  const trimmedMemberId = params.memberId.trim();
-  const ventaId = params.ventaId.trim();
-  const puntosCanjeados = Math.trunc(params.puntosCanjeados);
-  const saldoNuevo = Math.trunc(params.saldoNuevo);
-
-  if (!trimmedMemberId || !ventaId || puntosCanjeados <= 0) {
-    return;
-  }
-  if (!Number.isFinite(saldoNuevo) || saldoNuevo < 0) {
-    return;
-  }
-
-  const userRef = firestoreApp
-    .collection(USUARIOS_APP_COLLECTION)
-    .doc(trimmedMemberId);
-  const docId = buildPosRedemptionMovementDocId(ventaId);
-  const movRef = userRef.collection(MOVIMIENTOS_PUNTOS_SUBCOLLECTION).doc(docId);
-  const existing = await movRef.get();
-  if (existing.exists) {
-    return;
-  }
-
-  const saldoAnterior = saldoNuevo + puntosCanjeados;
-  await movRef.set({
-    id: docId,
-    usuarioId: trimmedMemberId,
-    tipo: "CANJE",
-    puntos: -puntosCanjeados,
-    saldoAnterior,
-    saldoNuevo,
-    origen: "pos",
-    origenId: ventaId,
-    referencia: ventaId,
-    descripcion: `Pago en concesión - ${ventaId}`,
-    createdAt: FieldValue.serverTimestamp(),
-  });
-};
-
 export const calcularPuntosPorVenta = (total: number): number =>
   Math.round(total * 0.1);
 
@@ -306,45 +122,20 @@ export const ventaAcumulaPuntos = (params: {
   return true;
 };
 
-const getUsuariosAppByUid = async (
-  uid: string,
-): Promise<{ id: string; data: Record<string, unknown> } | null> => {
-  const directRef = firestoreApp.collection(USUARIOS_APP_COLLECTION).doc(uid);
-  const directSnap = await directRef.get();
-  if (directSnap.exists) {
-    return { id: directSnap.id, data: (directSnap.data() ?? {}) as Record<string, unknown> };
-  }
-
-  const snapshot = await firestoreApp
-    .collection(USUARIOS_APP_COLLECTION)
-    .where("uid", "==", uid)
-    .limit(1)
-    .get();
-  if (snapshot.empty) {
-    return null;
-  }
-
-  const snap = snapshot.docs[0];
-  return { id: snap.id, data: (snap.data() ?? {}) as Record<string, unknown> };
-};
-
 const memberFromUsuariosApp = (
   id: string,
   data: Record<string, unknown>,
   fallbackId: string,
+  puntosActuales: number,
 ): ClubMemberData => {
   const nombre =
     (data.nombre as string | undefined)?.trim() ||
     (data.displayName as string | undefined)?.trim() ||
     "Socio";
   const email = (data.email as string | undefined)?.trim() ?? "";
-  const puntosActuales = Number(data.puntosActuales ?? 0);
 
   return {
-    id:
-      (data.uid as string | undefined)?.trim() ||
-      id ||
-      fallbackId,
+    id: (data.uid as string | undefined)?.trim() || id || fallbackId,
     nombre,
     email,
     puntosActuales: Number.isFinite(puntosActuales) ? puntosActuales : 0,
@@ -357,30 +148,17 @@ export const getClubMember = async (memberId: string): Promise<ClubMemberData> =
     throw new ApiError(400, "ID de socio inválido", true, "INVALID_MEMBER_ID");
   }
 
-  const url = buildBackendClApiUrl(
-    `/api/usuarios/${encodeURIComponent(trimmedId)}`,
-  );
-
-  try {
-    const resp = await withBackendClAuthRetry((headers) =>
-      axios.get(url, { headers, timeout: 15000 }),
-    );
-    return extractMember(resp.data, trimmedId);
-  } catch (error) {
-    try {
-      const fromFirestore = await getUsuariosAppByUid(trimmedId);
-      if (fromFirestore) {
-        return memberFromUsuariosApp(
-          fromFirestore.id,
-          fromFirestore.data,
-          trimmedId,
-        );
-      }
-    } catch {
-      // Keep the original BackendCL error if Firestore is also unavailable.
-    }
-    throw mapAxiosError(error, "No se pudo validar el socio en Club León");
+  const usuario = await resolveUsuarioAppRef(trimmedId);
+  if (!usuario) {
+    throw new ApiError(404, "Socio no encontrado", true, "MEMBER_NOT_FOUND");
   }
+
+  return memberFromUsuariosApp(
+    usuario.id,
+    usuario.data,
+    trimmedId,
+    await readAvailablePoints(usuario),
+  );
 };
 
 export const redeemPointsBySale = async (params: {
@@ -401,6 +179,7 @@ export const redeemPointsBySale = async (params: {
     await cancelRedemptionHold({
       redemptionId: hold.redemptionId,
       ventaId: params.ventaId,
+      memberId: hold.memberId,
     });
     throw error;
   }
@@ -432,52 +211,19 @@ export const createRedemptionHold = async (params: {
     );
   }
 
-  const descripcion = `Canje POS ${ventaId}`;
-  const idempotencyKey = `pos-redeem:${ventaId}`;
+  const hold = await holdSalePoints({
+    memberId: trimmedId,
+    ventaId,
+    puntos: puntosCanjeados,
+    descripcion: `Canje POS ${ventaId}`,
+  });
 
-  try {
-    const createResp = await withLoyaltyNamespaceRetry(
-      "/redemptions",
-      (url, headers) =>
-        axios.post(
-          url,
-          {
-            memberId: trimmedId,
-            points: puntosCanjeados,
-            description: descripcion,
-          },
-          {
-            headers: {
-              ...headers,
-              "Idempotency-Key": idempotencyKey,
-            },
-            timeout: 15000,
-          },
-        ),
-    );
-
-    const redemptionId = (
-      createResp.data as { redemption?: { redemptionId?: string } }
-    )?.redemption?.redemptionId;
-
-    if (!redemptionId) {
-      throw new ApiError(
-        502,
-        "BackendCL no devolvió redemptionId",
-        true,
-        "BACKENDCL_UNAVAILABLE",
-      );
-    }
-
-    return {
-      redemptionId,
-      memberId: trimmedId,
-      puntosCanjeados,
-      descripcion,
-    };
-  } catch (error) {
-    throw mapAxiosError(error, "No se pudieron reservar los puntos en Club León");
-  }
+  return {
+    redemptionId: hold.redemptionId,
+    memberId: hold.memberId,
+    puntosCanjeados: hold.puntosCanjeados,
+    descripcion: hold.descripcion,
+  };
 };
 
 export const confirmRedemptionHold = async (params: {
@@ -487,94 +233,41 @@ export const confirmRedemptionHold = async (params: {
   puntosCanjeados: number;
   descripcion: string;
 }): Promise<RedeemPointsBySaleResult> => {
-  const idempotencyKey = `pos-redeem:${params.ventaId}:confirm`;
+  const confirmed = await confirmSalePointsHold({
+    redemptionId: params.redemptionId,
+    memberId: params.memberId,
+    ventaId: params.ventaId,
+  });
 
-  try {
-    const confirmResp = await withLoyaltyNamespaceRetry(
-      `/redemptions/${encodeURIComponent(params.redemptionId)}/confirm`,
-      (url, headers) =>
-        axios.post(
-          url,
-          {},
-          {
-            headers: {
-              ...headers,
-              "Idempotency-Key": idempotencyKey,
-            },
-            timeout: 15000,
-          },
-        ),
-    );
-
-    const balanceAfter = (
-      confirmResp.data as { transaction?: { balanceAfter?: number } }
-    )?.transaction?.balanceAfter;
-
-    let puntosActuales = balanceAfter;
-    if (!Number.isFinite(puntosActuales)) {
-      const member = await getClubMember(params.memberId);
-      puntosActuales = member.puntosActuales;
-    }
-
-    await recordPosRedemptionMovement({
-      memberId: params.memberId,
-      ventaId: params.ventaId,
-      puntosCanjeados: params.puntosCanjeados,
-      saldoNuevo: Number(puntosActuales),
-    });
-
-    return {
-      memberId: params.memberId,
-      puntosCanjeados: params.puntosCanjeados,
-      montoPuntos: calcularMontoDesdePuntos(params.puntosCanjeados),
-      puntosActuales: Number(puntosActuales),
-      descripcion: params.descripcion,
-      redemptionId: params.redemptionId,
-      externalResponse: confirmResp.data,
-    };
-  } catch (error) {
-    throw mapAxiosError(error, "No se pudieron canjear los puntos en Club León");
-  }
+  return {
+    memberId: params.memberId,
+    puntosCanjeados: params.puntosCanjeados,
+    montoPuntos: calcularMontoDesdePuntos(params.puntosCanjeados),
+    puntosActuales: confirmed.puntosActuales,
+    descripcion: params.descripcion,
+    redemptionId: params.redemptionId,
+    externalResponse: {
+      source: "pos-ledger",
+      alreadyConfirmed: confirmed.alreadyConfirmed,
+    },
+  };
 };
 
 export const cancelRedemptionHold = async (params: {
   redemptionId: string;
   ventaId: string;
+  memberId: string;
 }): Promise<void> => {
-  try {
-    await withLoyaltyNamespaceRetry(
-      `/redemptions/${encodeURIComponent(params.redemptionId)}/cancel`,
-      (url, headers) =>
-        axios.post(
-          url,
-          {},
-          {
-            headers: {
-              ...headers,
-              "Idempotency-Key": `pos-redeem:${params.ventaId}:cancel`,
-            },
-            timeout: 15000,
-          },
-        ),
-    );
-  } catch (error) {
-    console.error("No se pudo cancelar la reserva de puntos", error);
-  }
+  await cancelSalePointsHold({
+    redemptionId: params.redemptionId,
+    memberId: params.memberId,
+    ventaId: params.ventaId,
+  });
 };
 
-const describeBackendClError = (
+const describeError = (
   error: unknown,
 ): { status?: number; code?: string; message?: string } => {
-  if (axios.isAxiosError(error)) {
-    const data = error.response?.data as
-      | { message?: string; code?: string; detail?: string; title?: string }
-      | undefined;
-    return {
-      status: error.response?.status,
-      code: data?.code ?? error.code,
-      message: data?.detail ?? data?.message ?? data?.title ?? error.message,
-    };
-  }
   if (error instanceof ApiError) {
     return {
       status: error.statusCode,
@@ -586,70 +279,13 @@ const describeBackendClError = (
 };
 
 /**
- * Acredita la venta en el ledger oficial de Club León.
+ * Acredita la venta en el ledger.
  *
- * `externalTransactionId` viaja explícito para que BackendCL deduplique por
- * venta: la acumulación en vivo, el reproceso de la cola de pendientes y el
- * script de reparación histórica comparten la clave `pos-sale:<ventaId>` y por
- * eso pueden ejecutarse cuantas veces haga falta sin duplicar puntos.
+ * La clave `pos-sale:<ventaId>` viaja en la respuesta para que el reproceso de
+ * la cola y cualquier reparación histórica compartan la misma referencia; la
+ * idempotencia real la impone el movimiento `pos_acc_<ventaId>` del ledger, así
+ * que reintentar la misma venta nunca duplica puntos.
  */
-const postAccrualToBackendCl = async (params: {
-  memberId: string;
-  total: number;
-  ventaId: string;
-  folioVenta: string;
-  descripcion: string;
-  puntosAsignados: number;
-}): Promise<AssignPointsBySaleResult> => {
-  const url = buildBackendClApiUrl(
-    `/api/usuarios/${encodeURIComponent(params.memberId)}/puntos/asignar-por-venta`,
-  );
-  const externalTransactionId = buildPosSaleIdempotencyKey(params.ventaId);
-
-  const resp = await withBackendClAuthRetry((headers) =>
-    axios.post(
-      url,
-      {
-        folioVenta: params.folioVenta,
-        dinero: params.total,
-        descripcion: params.descripcion,
-        externalTransactionId,
-      },
-      {
-        headers: { ...headers, "Idempotency-Key": externalTransactionId },
-        timeout: 15000,
-      },
-    ),
-  );
-
-  const payload = resp.data as {
-    alreadyProcessed?: boolean;
-    data?: {
-      puntosActuales?: number;
-      puntosAsignados?: number;
-      montoVenta?: number;
-      alreadyProcessed?: boolean;
-      externalTransactionId?: string;
-    };
-  };
-
-  const alreadyProcessed = Boolean(
-    payload.alreadyProcessed ?? payload.data?.alreadyProcessed,
-  );
-
-  return {
-    memberId: params.memberId,
-    montoVenta: payload.data?.montoVenta ?? params.total,
-    puntosAsignados: payload.data?.puntosAsignados ?? params.puntosAsignados,
-    puntosActuales: payload.data?.puntosActuales ?? 0,
-    descripcion: params.descripcion,
-    status: alreadyProcessed ? "ALREADY_PROCESSED" : "APPLIED",
-    alreadyProcessed,
-    externalTransactionId,
-    externalResponse: resp.data,
-  };
-};
-
 export const assignPointsBySale = async (params: {
   memberId: string;
   total: number;
@@ -672,82 +308,42 @@ export const assignPointsBySale = async (params: {
 
   const puntosAsignados = calcularPuntosPorVenta(total);
   const descripcion = params.descripcion?.trim() || `Venta POS ${ventaId}`;
-  const folioVenta = (params.folioVenta ?? ventaId).trim();
 
-  try {
-    const result = await postAccrualToBackendCl({
-      memberId: trimmedId,
-      total,
-      ventaId,
-      folioVenta,
-      descripcion,
-      puntosAsignados,
-    });
-    // Si esta venta venía arrastrando un pendiente, ya quedó saldada.
-    await markPendingAccrualCompleted({
-      ventaId,
-      alreadyProcessed: result.alreadyProcessed,
-    }).catch(() => undefined);
-    return result;
-  } catch (error) {
-    const detail = describeBackendClError(error);
+  const result = await accrueSalePoints({
+    memberId: trimmedId,
+    ventaId,
+    puntos: puntosAsignados,
+    descripcion,
+    montoVenta: total,
+  });
 
-    // Un rechazo de negocio (socio inexistente, monto inválido) no se encola:
-    // reintentarlo nunca va a funcionar y ensuciaría la cola.
-    if (
-      detail.status != null &&
-      detail.status >= 400 &&
-      detail.status < 500 &&
-      detail.status !== 429
-    ) {
-      throw mapAxiosError(error, "No se pudieron asignar los puntos en Club León");
-    }
+  // Si esta venta venía arrastrando un pendiente de la cola, ya quedó saldada.
+  await markPendingAccrualCompleted({
+    ventaId,
+    alreadyProcessed: result.status === "ALREADY_PROCESSED",
+  }).catch(() => undefined);
 
-    console.error("[loyalty] acumulación diferida: BackendCL no disponible", {
-      ventaId,
-      memberId: trimmedId,
-      puntos: puntosAsignados,
-      ...detail,
-    });
-
-    // La venta ya ocurrió: no se pierde ni se inventa un saldo paralelo.
-    // Queda como operación PENDING para reintegrarse al ledger oficial.
-    const pending = await enqueuePendingAccrual({
-      memberId: trimmedId,
-      ventaId,
-      folioVenta,
-      puntos: puntosAsignados,
-      total,
-      descripcion,
-      concesionId: params.concesionId,
-      sucursalId: params.sucursalId,
-      cajaId: params.cajaId,
-      error: detail,
-    });
-
-    return {
-      memberId: trimmedId,
-      montoVenta: total,
-      puntosAsignados,
-      // Desconocido a propósito: el saldo real solo lo dicta el ledger.
-      puntosActuales: 0,
-      descripcion,
-      status: "PENDING",
-      alreadyProcessed: false,
-      externalTransactionId: pending.idempotencyKey,
-      externalResponse: {
-        source: "pending-queue",
-        status: pending.status,
-        attempts: pending.attempts,
-        lastError: detail,
-      },
-    };
-  }
+  return {
+    memberId: trimmedId,
+    montoVenta: total,
+    puntosAsignados: result.puntosAsignados,
+    puntosActuales: result.puntosActuales,
+    descripcion,
+    status: result.status,
+    alreadyProcessed: result.status === "ALREADY_PROCESSED",
+    externalTransactionId: buildPosSaleIdempotencyKey(ventaId),
+    externalResponse: {
+      source: "pos-ledger",
+      movimientoId: result.movimientoId,
+      saldoAnterior: result.saldoAnterior,
+    },
+  };
 };
 
 /**
- * Reintegra al ledger oficial las acumulaciones que quedaron pendientes.
- * Idempotente: una venta ya acreditada responde ALREADY_PROCESSED y no suma.
+ * Acredita las acumulaciones que quedaron encoladas cuando los puntos aún
+ * dependían de un servicio externo. Idempotente: una venta ya acreditada
+ * responde ALREADY_PROCESSED y no suma de nuevo.
  */
 export const reprocessPendingAccruals = async (
   limit = 50,
@@ -779,21 +375,22 @@ export const reprocessPendingAccruals = async (
 
   for (const pendiente of pendientes) {
     try {
-      const result = await postAccrualToBackendCl({
+      const result = await accrueSalePoints({
         memberId: pendiente.memberId,
-        total: pendiente.total,
         ventaId: pendiente.ventaId,
-        folioVenta: pendiente.folioVenta || pendiente.ventaId,
+        puntos: pendiente.puntos,
         descripcion: pendiente.descripcion,
-        puntosAsignados: pendiente.puntos,
+        montoVenta: pendiente.total,
       });
+
+      const alreadyProcessed = result.status === "ALREADY_PROCESSED";
 
       await markPendingAccrualCompleted({
         ventaId: pendiente.ventaId,
-        alreadyProcessed: result.alreadyProcessed,
+        alreadyProcessed,
       });
 
-      if (result.alreadyProcessed) {
+      if (alreadyProcessed) {
         yaProcesadas += 1;
       } else {
         completadas += 1;
@@ -805,7 +402,7 @@ export const reprocessPendingAccruals = async (
         resultado: result.status,
       });
     } catch (error) {
-      const detail = describeBackendClError(error);
+      const detail = describeError(error);
       fallidas += 1;
       await markPendingAccrualFailed({
         ventaId: pendiente.ventaId,

@@ -853,6 +853,7 @@ export const createDetalleVenta = async (params: {
       await cancelRedemptionHold({
         redemptionId: redemptionHold.redemptionId,
         ventaId: params.ventaId,
+        memberId: redemptionHold.memberId,
       });
     }
     unwrapTransactionError(error);
@@ -871,6 +872,7 @@ export const createDetalleVenta = async (params: {
       await cancelRedemptionHold({
         redemptionId: redemptionHold.redemptionId,
         ventaId: params.ventaId,
+        memberId: redemptionHold.memberId,
       });
       if (error instanceof ApiError) {
         throw new ApiError(
