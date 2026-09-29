@@ -35,7 +35,8 @@ const parseMultipartProductBody = (req: Request) => {
 
   return createProductSchema.parse({
     nombre: String(req.body.nombre ?? "").trim(),
-    unidad_medida: String(req.body.unidad_medida ?? "Unidad").trim() || "Unidad",
+    descripcion: String(req.body.descripcion ?? ""),
+    unidad_medida: "pz",
     precio: Number(req.body.precio),
     activo,
     imagenes: [],
