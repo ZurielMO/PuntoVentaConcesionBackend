@@ -1309,7 +1309,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       ]);
       for (const window of match.windows) {
         expect(Date.parse(window.endAt) - Date.parse(window.startAt)).toBeGreaterThanOrEqual(25 * 60_000);
-        expect(window.remaining).toBe(12);
+        expect(window.remaining).toBeNull();
       }
       const service = await import("../src/services/vip/vip.service");
       await expect(service.getPublicSalesStatus()).resolves.toMatchObject({
@@ -1413,8 +1413,15 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       expect(same.status).toBe(VipOrderStatus.ACCEPTED);
     });
 
+    it("allows orders without capacity limits even if the window already has many orders", async () => {
+      mockRows.set(slotPath("1910"), { count: 100 });
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput("19:10"), "checkout-no-capacity-limit");
+      expect(checkout.orderId).toBeTruthy();
+      expect(mockRows.get(slotPath("1910"))?.count).toBe(101);
+    });
+
     it.each([
-      ["a full window", () => mockRows.set(slotPath("1910"), { count: 12 }), "19:10", "VIP_PREORDER_WINDOW_FULL"],
       ["a misaligned window", () => undefined, "19:00", "VIP_PREORDER_WINDOW_INVALID"],
       ["disabled preorders", () => mockRows.set("vip_preorder_configs/default", { enabled: false }), "18:10", "VIP_PREORDER_CLOSED"],
       ["a disabled match", () => mockRows.set("vip_preorder_configs/jornada-1", { enabled: false }), "18:10", "VIP_PREORDER_MATCH_UNAVAILABLE"],
@@ -1593,10 +1600,17 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
         jornadaId: "jornada-1",
       });
       expect(mockRows.get("inventarios/inv-other/productos/p1")?.cantidad_final).toBe(20);
-      const posted = [...mockRows.entries()].some(([path, row]) =>
-        path.startsWith("inventarios/inv-1/movimientos/") && row.tipo === "VENTA" && row.cantidad === -2,
+      const ventaMoves = () => [...mockRows.entries()].filter(([path, row]) =>
+        path.startsWith("inventarios/inv-1/movimientos/") && row.tipo === "VENTA" && row.vipOrderId === checkout.orderId,
       );
-      expect(posted).toBe(true);
+      expect(ventaMoves()).toHaveLength(1);
+
+      await applyDeferredVipInventory("inv-1");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(8);
+      expect(ventaMoves()).toHaveLength(1);
+      expect([...mockRows.keys()].filter((path) =>
+        path.startsWith(`comprobantes_venta/vip_${checkout.orderId}`) && !path.includes("/detalle/"),
+      )).toHaveLength(1);
 
       await service.cancelOrder(checkout.orderId, "El palco canceló", actor);
       expect(mockRows.get(orderPath)?.payment.status).toBe("REFUNDED");
@@ -1621,6 +1635,12 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
         inventarioId: "inv-1",
         vipOrderType: "PREORDER",
       });
+      const preparing = await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(preparing.status).toBe(VipOrderStatus.PREPARING);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+      expect([...mockRows.entries()].filter(([path, row]) =>
+        path.startsWith("inventarios/inv-1/movimientos/") && row.tipo === "VENTA" && row.vipOrderId === checkout.orderId,
+      )).toHaveLength(1);
 
       mockRows.set("inventarios/inv-1", { ...mockRows.get("inventarios/inv-1"), activo: false });
       await service.cancelOrder(checkout.orderId, "Inventario ya cerrado", actor);
@@ -1666,6 +1686,167 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
         inventoryDeferred: true,
         inventoryApplied: false,
       });
+    });
+
+    it("records a deferred preorder once when preparation starts, even if the loaded stock is still zero", async () => {
+      mockRows.set("inventarios/inv-1/productos/p1", {
+        cantidad_inicial: 0,
+        cantidad_final: 0,
+        precio_jornada: 100,
+      });
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-prepare");
+      await confirmPaid(service, checkout.orderId, "evt_preorder_prepare");
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toBeUndefined();
+
+      const preparing = await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(preparing.status).toBe(VipOrderStatus.PREPARING);
+      expect(preparing.salesRecorded).toBe(true);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toMatchObject({
+        vipOrderId: checkout.orderId,
+        vipOrderType: "PREORDER",
+        inventarioId: "inv-1",
+      });
+      const ventaMoves = () => [...mockRows.entries()].filter(([path, row]) =>
+        path.includes("/movimientos/") && row.tipo === "VENTA" && row.vipOrderId === checkout.orderId,
+      );
+      expect(ventaMoves()).toHaveLength(1);
+
+      const { applyDeferredVipInventory } = await import("../src/services/vip/vip-preorder-inventory.service");
+      await applyDeferredVipInventory("inv-1");
+      await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+      expect(ventaMoves()).toHaveLength(1);
+      expect([...mockRows.keys()].filter((path) =>
+        path.startsWith(`comprobantes_venta/vip_${checkout.orderId}`) && !path.includes("/detalle/"),
+      )).toHaveLength(1);
+
+      await service.cancelOrder(checkout.orderId, "El palco canceló", actor);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)?.status).toBe("REFUNDED");
+    });
+
+    it("lets preparation start without inventory and posts the sale once that match line exists", async () => {
+      mockRows.delete("inventarios/inv-1/productos/p1");
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-prepare-later");
+      const created = mockRows.get(`vip_orders/${checkout.orderId}`);
+      const payload = JSON.stringify({
+        id: "evt_preorder_prepare_later",
+        object: "event",
+        api_version: "2025-02-24.acacia",
+        created: 1,
+        data: {
+          object: {
+            id: "pi_preorder_prepare_later",
+            object: "payment_intent",
+            amount_received: created?.totalMinor,
+            currency: String(created?.currency || "mxn").toLowerCase(),
+            metadata: { orderId: checkout.orderId, source: "VIP" },
+          },
+        },
+        livemode: false,
+        pending_webhooks: 1,
+        request: null,
+        type: "payment_intent.succeeded",
+      });
+      await service.processStripeWebhook(Buffer.from(payload), signEvent(payload));
+
+      const preparing = await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(preparing.status).toBe(VipOrderStatus.PREPARING);
+      expect(preparing.salesRecorded).toBe(false);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toBeUndefined();
+
+      mockRows.set("inventarios/inv-match", {
+        activo: true,
+        sucursal_id: "s1",
+        concesion_id: "c1",
+        rama: "varonil",
+        jornada_fecha: matchDate,
+        jornada_numero: 11,
+      });
+      mockRows.set("inventarios/inv-match/productos/p1", {
+        cantidad_inicial: 10,
+        cantidad_final: 10,
+        precio_jornada: 100,
+      });
+      const again = await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(again.status).toBe(VipOrderStatus.PREPARING);
+      expect(mockRows.get("inventarios/inv-match/productos/p1")?.cantidad_final).toBe(8);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")).toBeUndefined();
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toMatchObject({
+        inventarioId: "inv-match",
+        vipOrderType: "PREORDER",
+      });
+      const reservation = [...mockRows.entries()].find(([path, row]) =>
+        path.startsWith("vip_reservations/") && row.orderId === checkout.orderId,
+      )?.[1];
+      expect(reservation).toMatchObject({ inventoryApplied: true, inventoryId: "inv-match" });
+
+      await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      const { applyDeferredVipInventory } = await import("../src/services/vip/vip-preorder-inventory.service");
+      await applyDeferredVipInventory("inv-match");
+      await applyDeferredVipInventory("inv-1");
+      expect(mockRows.get("inventarios/inv-match/productos/p1")?.cantidad_final).toBe(8);
+      expect([...mockRows.entries()].filter(([path, row]) =>
+        row.tipo === "VENTA" && row.vipOrderId === checkout.orderId,
+      )).toHaveLength(1);
+      expect([...mockRows.keys()].filter((path) =>
+        path.startsWith(`comprobantes_venta/vip_${checkout.orderId}`) && !path.includes("/detalle/"),
+      )).toHaveLength(1);
+    });
+
+    it("posts the sale once when the match inventory line is saved after the preorder", async () => {
+      mockRows.set("inventarios/inv-1", {
+        ...mockRows.get("inventarios/inv-1"),
+        activo: true,
+        concesion_id: "c1",
+        sucursal_id: "s1",
+        jornada_fecha: matchDate,
+      });
+      mockRows.delete("inventarios/inv-1/productos/p1");
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-on-save");
+      const created = mockRows.get(`vip_orders/${checkout.orderId}`);
+      const payload = JSON.stringify({
+        id: "evt_preorder_on_save",
+        object: "event",
+        api_version: "2025-02-24.acacia",
+        created: 1,
+        data: {
+          object: {
+            id: "pi_preorder_on_save",
+            object: "payment_intent",
+            amount_received: created?.totalMinor,
+            currency: String(created?.currency || "mxn").toLowerCase(),
+            metadata: { orderId: checkout.orderId, source: "VIP" },
+          },
+        },
+        livemode: false,
+        pending_webhooks: 1,
+        request: null,
+        type: "payment_intent.succeeded",
+      });
+      await service.processStripeWebhook(Buffer.from(payload), signEvent(payload));
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toBeUndefined();
+
+      mockRows.set("inventarios/inv-1/productos/p1", {
+        cantidad_inicial: 0,
+        cantidad_final: 0,
+        precio_jornada: 100,
+      });
+      const { settleInventoryQuietly } = await import("../src/services/vip/vip-preorder-inventory.service");
+      await settleInventoryQuietly("inv-1");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+      expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.salesRecorded).toBe(true);
+      await settleInventoryQuietly("inv-1");
+      await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+      expect([...mockRows.entries()].filter(([, row]) => row.tipo === "VENTA" && row.vipOrderId === checkout.orderId)).toHaveLength(1);
+      expect([...mockRows.keys()].filter((path) =>
+        path.startsWith(`comprobantes_venta/vip_${checkout.orderId}`) && !path.includes("/detalle/"),
+      )).toHaveLength(1);
     });
   });
 });

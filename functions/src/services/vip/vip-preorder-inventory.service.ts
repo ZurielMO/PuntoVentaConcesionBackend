@@ -37,6 +37,16 @@ const reservationStockTaken = (data: DocData | undefined): boolean => {
   return data.inventoryApplied !== false;
 };
 
+/** Un movimiento por reserva. Reintentar la misma orden no abre otro documento. */
+export const preorderMovementId = (reservationId: string): string => `preorder_${reservationId}`;
+
+type SettleOptions = {
+  /** En preparación, la línea del producto basta: aunque la carga inicial siga en cero. */
+  whenProductLineExists?: boolean;
+  /** Ids de inventario guardados en la reserva que deben aplicarse sobre el inventario destino. */
+  sourceInventoryIds?: string[];
+};
+
 export const reservationAwaitingInventory = (data: DocData | undefined): boolean =>
   data?.inventoryDeferred === true && data?.inventoryApplied !== true &&
   data?.status === VipReservationStatus.CONFIRMED;
@@ -107,6 +117,50 @@ const writeFulfillmentSale = (
   }
 };
 
+const inventoryMatchesMatchDate = (id: string, data: DocData, matchDate: string): boolean => {
+  if (!matchDate) return false;
+  if (id.startsWith(`${matchDate}__`)) return true;
+  const fecha = data.jornada_fecha;
+  return typeof fecha === "string" && fecha.slice(0, 10) === matchDate;
+};
+
+const openProductLineExists = async (inventoryId: string, productId: string): Promise<boolean> => {
+  const header = await col(COLLECTIONS.INVENTARIOS).doc(inventoryId).get();
+  if (!header.exists || header.data()?.activo !== true) return false;
+  const line = await header.ref.collection(SUBCOLLECTIONS.PRODUCTOS).doc(productId).get();
+  return line.exists;
+};
+
+/**
+ * Inventario donde debe caer la preventa al mandarla a preparación.
+ * Usa el id de la reserva si esa línea ya existe. Si no, el único inventario
+ * abierto de la concesión para la fecha del partido.
+ */
+const resolvePreparationInventory = async (data: DocData): Promise<string> => {
+  const reservedId = String(data.inventoryId || "");
+  const productId = String(data.productId || "");
+  if (reservedId && productId && await openProductLineExists(reservedId, productId)) return reservedId;
+
+  const concessionId = String(data.concessionId || "");
+  const matchDate = String(data.matchDate || data.jornadaFecha || "");
+  const sucursalId = String(data.sucursalId || "");
+  if (!concessionId || !productId || !matchDate) return reservedId;
+
+  const snap = await col(COLLECTIONS.INVENTARIOS).where("concesion_id", "==", concessionId).limit(40).get();
+  const matches: Array<{ id: string; sucursalId: string }> = [];
+  for (const doc of snap.docs) {
+    if (doc.data()?.activo !== true) continue;
+    if (!inventoryMatchesMatchDate(doc.id, doc.data() || {}, matchDate)) continue;
+    const line = await doc.ref.collection(SUBCOLLECTIONS.PRODUCTOS).doc(productId).get();
+    if (!line.exists) continue;
+    matches.push({ id: doc.id, sucursalId: String(doc.data()?.sucursal_id || "") });
+  }
+  const sameBranch = sucursalId ? matches.filter((row) => row.sucursalId === sucursalId) : matches;
+  if (sameBranch.length === 1) return sameBranch[0].id;
+  if (sameBranch.length === 0 && matches.length === 1) return matches[0].id;
+  return reservedId;
+};
+
 /**
  * Applies paid, not-yet-posted preorders onto one inventory header.
  * Writes the sale receipt only after every draw of that fulfillment is in stock.
@@ -128,7 +182,35 @@ export const applyDeferredVipInventory = async (inventoryId: string): Promise<nu
   return applied;
 };
 
-const settleOrderOnInventory = async (orderId: string, inventoryId: string): Promise<number> => {
+/** Registra stock y comprobante de una preventa al pasarla a preparación. Si no hay línea, no bloquea. */
+export const postPreorderInventoryForPreparation = async (orderId: string): Promise<void> => {
+  const snap = await col(COLLECTIONS.VIP_RESERVATIONS).where("orderId", "==", orderId).get();
+  const groups = new Map<string, Set<string>>();
+  for (const doc of snap.docs) {
+    const data = doc.data() || {};
+    if (!reservationAwaitingInventory(data)) continue;
+    const reservedId = String(data.inventoryId || "");
+    const target = await resolvePreparationInventory(data);
+    const inventoryId = target || reservedId;
+    if (!inventoryId) continue;
+    const sources = groups.get(inventoryId) ?? new Set<string>();
+    if (reservedId) sources.add(reservedId);
+    sources.add(inventoryId);
+    groups.set(inventoryId, sources);
+  }
+  for (const [inventoryId, sources] of groups) {
+    await settleOrderOnInventory(orderId, inventoryId, {
+      whenProductLineExists: true,
+      sourceInventoryIds: [...sources],
+    });
+  }
+};
+
+const settleOrderOnInventory = async (
+  orderId: string,
+  inventoryId: string,
+  options: SettleOptions = {},
+): Promise<number> => {
   const businessDate = getVipBusinessDate();
   return firestorePos.runTransaction(async (tx) => {
     const orderRef = orderCol().doc(orderId);
@@ -148,8 +230,11 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
       ref: doc.ref,
       data: doc.data() || {},
     }));
+    const sourceIds = new Set(
+      options.sourceInventoryIds?.length ? options.sourceInventoryIds : [inventoryId],
+    );
     const pending = reservations.filter((row) =>
-      String(row.data.inventoryId || "") === inventoryId && reservationAwaitingInventory(row.data),
+      sourceIds.has(String(row.data.inventoryId || "")) && reservationAwaitingInventory(row.data),
     );
     if (!pending.length) return 0;
 
@@ -177,6 +262,7 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
         const inicial = stock?.exists ? Number(stock.data()?.cantidad_inicial ?? 0) : 0;
         const matchDate = String(row.data.matchDate || row.data.jornadaFecha || "");
         if (!stock?.exists) return shouldSettleDeferredPreorder(0, matchDate, businessDate) && businessDate >= matchDate;
+        if (options.whenProductLineExists) return true;
         return shouldSettleDeferredPreorder(inicial, matchDate, businessDate);
       })
       : [];
@@ -192,14 +278,34 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
 
     if (!applicable.length) return 0;
 
+    const movementDocs = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    for (const row of applicable) {
+      const movementRef = col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
+        .collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(preorderMovementId(row.ref.id));
+      movementDocs.set(row.ref.path, await tx.get(movementRef));
+    }
+
     const now = Timestamp.now();
     const appliedPaths = new Set<string>();
     const running = new Map<string, number>();
     let applied = 0;
+    let relinkFulfillment = false;
     for (const row of applicable) {
       const productId = String(row.data.productId || "");
       const quantity = Number(row.data.quantity || 0);
       if (!productId || !Number.isInteger(quantity) || quantity <= 0) continue;
+      if (String(row.data.inventoryId || "") !== inventoryId) relinkFulfillment = true;
+      const existingMovement = movementDocs.get(row.ref.path);
+      if (existingMovement?.exists) {
+        tx.update(row.ref, {
+          inventoryApplied: true,
+          inventoryId,
+          updatedAt: now,
+        });
+        appliedPaths.add(row.ref.path);
+        applied += 1;
+        continue;
+      }
       const stock = stockDocs.get(productId);
       const stockRef = col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
         .collection(SUBCOLLECTIONS.PRODUCTOS).doc(productId);
@@ -222,7 +328,8 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
         tx.update(stockRef, { cantidad_final: next, updatedAt: now });
       }
       tx.create(
-        col(COLLECTIONS.INVENTARIOS).doc(inventoryId).collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(),
+        col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
+          .collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(preorderMovementId(row.ref.id)),
         {
           tipo: "VENTA",
           producto_id: productId,
@@ -232,12 +339,14 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
           sucursal_id: row.data.sucursalId ?? null,
           ventaId: order.id,
           vipOrderId: order.id,
+          reservaId: row.ref.id,
           motivo: "Preventa VIP aplicada al inventario del partido",
           createdAt: now,
         },
       );
       tx.update(row.ref, {
         inventoryApplied: true,
+        inventoryId,
         updatedAt: now,
       });
       appliedPaths.add(row.ref.path);
@@ -247,14 +356,34 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
     const isApplied = (row: { ref: FirebaseFirestore.DocumentReference; data: DocData }) =>
       appliedPaths.has(row.ref.path) || row.data.inventoryApplied === true || row.data.inventoryDeferred !== true;
 
+    const fulfillments = relinkFulfillment
+      ? order.fulfillments.map((row) =>
+        sourceIds.has(row.inventoryId) && row.inventoryId !== inventoryId
+          ? { ...row, inventoryId }
+          : row,
+      )
+      : order.fulfillments;
+    const recordedSales = relinkFulfillment
+      ? fulfillments.map((fulfillment) => ({
+        fulfillment,
+        ref: col(COLLECTIONS.COMPROBANTES_VENTA).doc(vipSaleDocId(order.id, fulfillment, fulfillments)),
+      }))
+      : saleRefs;
+
     let allRecorded = true;
-    for (const sale of saleRefs) {
-      const draws = reservations.filter((row) =>
-        String(row.data.inventoryId || "") === sale.fulfillment.inventoryId &&
-        String(row.data.concessionId || "") === sale.fulfillment.concessionId &&
-        row.data.status !== VipReservationStatus.RELEASED &&
-        row.data.status !== VipReservationStatus.RESTORED,
-      );
+    for (const sale of recordedSales) {
+      const draws = reservations.filter((row) => {
+        const reservationInventoryId = appliedPaths.has(row.ref.path)
+          ? inventoryId
+          : String(row.data.inventoryId || "");
+        const fulfillmentInventoryId = sale.fulfillment.inventoryId;
+        const sameInventory = reservationInventoryId === fulfillmentInventoryId ||
+          (sourceIds.has(reservationInventoryId) && sourceIds.has(fulfillmentInventoryId));
+        return sameInventory &&
+          String(row.data.concessionId || "") === sale.fulfillment.concessionId &&
+          row.data.status !== VipReservationStatus.RELEASED &&
+          row.data.status !== VipReservationStatus.RESTORED;
+      });
       const ready = draws.length > 0 && draws.every(isApplied);
       if (!ready) {
         allRecorded = false;
@@ -264,8 +393,9 @@ const settleOrderOnInventory = async (orderId: string, inventoryId: string): Pro
       if (existing?.exists && existing.data()?.vipOrderId) continue;
       writeFulfillmentSale(tx, order, sale.fulfillment, now);
     }
-    if (allRecorded && order.salesRecorded !== true) {
+    if (allRecorded && (relinkFulfillment || order.salesRecorded !== true)) {
       tx.update(orderRef, {
+        ...(relinkFulfillment ? { fulfillments } : {}),
         salesRecorded: true,
         inventoryConfirmed: true,
         updatedAt: now,
@@ -302,8 +432,39 @@ export const settleInventoryQuietly = async (inventarioId: string | null | undef
   if (!inventarioId) return;
   try {
     await applyDeferredVipInventory(inventarioId);
+    await postAwaitingPreordersOntoInventory(inventarioId);
   } catch (error) {
     logSettleFailure(inventarioId, error);
+  }
+};
+
+/**
+ * Al guardar el inventario del partido, aplica preventas que seguían pendientes
+ * aunque la orden ya esté en preparación o el id del documento no sea el de la reserva.
+ */
+const postAwaitingPreordersOntoInventory = async (inventarioId: string): Promise<void> => {
+  const header = await col(COLLECTIONS.INVENTARIOS).doc(inventarioId).get();
+  const data = header.data() || {};
+  if (!header.exists || data.activo !== true) return;
+  const concessionId = String(data.concesion_id || "");
+  const matchDate = typeof data.jornada_fecha === "string" ? data.jornada_fecha.slice(0, 10) : "";
+  if (!concessionId || !matchDate) return;
+  const snap = await col(COLLECTIONS.VIP_RESERVATIONS)
+    .where("concessionId", "==", concessionId)
+    .limit(200)
+    .get();
+  const orderIds = [...new Set(
+    snap.docs
+      .filter((doc) => {
+        const row = doc.data() || {};
+        const date = String(row.matchDate || row.jornadaFecha || "").slice(0, 10);
+        return reservationAwaitingInventory(row) && date === matchDate;
+      })
+      .map((doc) => String(doc.data()?.orderId || ""))
+      .filter(Boolean),
+  )];
+  for (const orderId of orderIds) {
+    await postPreorderInventoryForPreparation(orderId);
   }
 };
 

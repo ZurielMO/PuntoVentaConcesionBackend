@@ -46,6 +46,7 @@ import { ramaFromInventario } from "../asignacion-caja.service";
 import { getJornadaActiva } from "../jornada.service";
 import {
   applyDeferredVipInventory,
+  postPreorderInventoryForPreparation,
   preorderLinePrice,
   vipReservationDecrementedStock,
   vipSaleDocId,
@@ -885,10 +886,6 @@ export const createCheckout = async (
     let slotDoc: FirebaseFirestore.DocumentSnapshot | null = null;
     if (preorder) {
       slotDoc = await tx.get(preorder.slotRef);
-      const booked = Math.max(0, Number(slotDoc.data()?.count || 0));
-      if (booked >= preorder.capacity) {
-        throw new ApiError(409, "Ese horario ya se llenó. Elige otra ventana de entrega.", true, "VIP_PREORDER_WINDOW_FULL");
-      }
     } else {
       assertVipServiceOpen(latestService);
       assertVipCapacity(latestService);
@@ -1852,10 +1849,12 @@ const toCatalogProduct = (
     id: productDoc.id,
     imagenes: Array.isArray(product.imagenes) ? product.imagenes : [],
   }).imagenes;
+  const description = String(product.descripcion || "").trim();
   return {
     id: productDoc.id,
     concessionId,
     name: String(product.nombre || productDoc.id),
+    description,
     unit: String(product.unidad_medida || "pieza"),
     images: normalizedProductImages,
     price: minorToMoney(moneyToMinor(price)),
@@ -2339,16 +2338,43 @@ export const transitionOrder = async (
   metadata?: Record<string, unknown>,
 ) => {
   const ref = orderCol().doc(orderId);
+  if (status === VipOrderStatus.PREPARING) {
+    const preview = await ref.get();
+    if (preview.exists && isVipPreorder(preview.data() as VipOrder)) {
+      const current = (preview.data() as VipOrder).status;
+      const canPrepare = current === VipOrderStatus.ACCEPTED
+        || current === VipOrderStatus.RECEIVED
+        || current === VipOrderStatus.PAID
+        || current === VipOrderStatus.PREPARING;
+      if (canPrepare) await postPreorderInventoryForPreparation(orderId);
+    }
+  }
   const previousStatus = await firestorePos.runTransaction(async (tx): Promise<VipOrderStatus> => {
     const doc = await tx.get(ref);
     if (!doc.exists) throw new ApiError(404, "Orden no encontrada.", true, "VIP_ORDER_NOT_FOUND");
     const order = doc.data() as VipOrder;
     const preorder = isVipPreorder(order);
     const autoOnTheWay = !preorder && status === VipOrderStatus.ACCEPTED && order.status === VipOrderStatus.RECEIVED;
+    // Central pasa una preventa pagada de Recibido a Preparación en un solo botón.
+    const preorderPrepare =
+      preorder &&
+      status === VipOrderStatus.PREPARING &&
+      (order.status === VipOrderStatus.RECEIVED || order.status === VipOrderStatus.PAID);
     const finalStatus = autoOnTheWay ? VipOrderStatus.ON_THE_WAY : status;
     if (order.status === finalStatus) return order.status;
-    assertVipOrderTransition(order.status, status);
-    if (autoOnTheWay) assertVipOrderTransition(VipOrderStatus.ACCEPTED, VipOrderStatus.ON_THE_WAY);
+    if (preorderPrepare) {
+      if (order.status === VipOrderStatus.PAID) {
+        assertVipOrderTransition(VipOrderStatus.PAID, VipOrderStatus.RECEIVED);
+      }
+      assertVipOrderTransition(
+        order.status === VipOrderStatus.PAID ? VipOrderStatus.RECEIVED : order.status,
+        VipOrderStatus.ACCEPTED,
+      );
+      assertVipOrderTransition(VipOrderStatus.ACCEPTED, VipOrderStatus.PREPARING);
+    } else {
+      assertVipOrderTransition(order.status, status);
+      if (autoOnTheWay) assertVipOrderTransition(VipOrderStatus.ACCEPTED, VipOrderStatus.ON_THE_WAY);
+    }
     if ([
       VipOrderStatus.PENDING_PAYMENT,
       VipOrderStatus.PAID,
@@ -2379,11 +2405,11 @@ export const transitionOrder = async (
       status: finalStatus,
       capacityReleased,
       fulfillments: order.fulfillments.map((row) => ({ ...row, status: finalStatus })),
-      ...(autoOnTheWay ? { "timestamps.acceptedAt": FieldValue.serverTimestamp() } : {}),
+      ...(autoOnTheWay || preorderPrepare ? { "timestamps.acceptedAt": FieldValue.serverTimestamp() } : {}),
       [`timestamps.${timestampKey}`]: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    if (autoOnTheWay) {
+    if (autoOnTheWay || preorderPrepare) {
       tx.create(orderEventRef(orderId), eventPayload(
         "ORDER_ACCEPTED",
         order.status,
@@ -2394,9 +2420,9 @@ export const transitionOrder = async (
       tx.create(orderEventRef(orderId), eventPayload(
         "STATUS_CHANGED",
         VipOrderStatus.ACCEPTED,
-        VipOrderStatus.ON_THE_WAY,
+        finalStatus,
         actor,
-        { ...metadata, autoDispatched: true },
+        { ...metadata, ...(autoOnTheWay ? { autoDispatched: true } : { preorderPrepared: true }) },
       ));
     } else {
       tx.create(orderEventRef(orderId), eventPayload(

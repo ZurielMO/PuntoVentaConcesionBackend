@@ -163,7 +163,7 @@ const publicMatch = (match: VipPreorderMatch) => ({
   kickoffAt: match.kickoffAt !== null ? new Date(match.kickoffAt).toISOString() : null,
 });
 
-export const getPreorderAvailability = async (zona?: VipStadiumZone, now = Date.now()) => {
+export const getPreorderAvailability = async (_zona?: VipStadiumZone, now = Date.now()) => {
   const { settings, matches } = await loadPreorderCatalog();
   const base = {
     enabled: settings.enabled,
@@ -177,26 +177,17 @@ export const getPreorderAvailability = async (zona?: VipStadiumZone, now = Date.
   for (const match of matches) {
     const slots = buildPreorderSlots(match, settings, now).filter((slot) => slot.bookable);
     if (!slots.length) continue;
-    const used = zona
-      ? await Promise.all(slots.map(async (slot) => {
-        const doc = await slotCol().doc(preorderSlotId(match.matchId, zona, slot.key)).get();
-        return Math.max(0, Number(doc.data()?.count || 0));
-      }))
-      : null;
     result.push({
       ...publicMatch(match),
-      windows: slots.map((slot, index) => {
-        const remaining = used ? Math.max(0, match.slotCapacity - used[index]) : null;
-        return {
-          start: slot.start,
-          end: slot.end,
-          label: slot.label,
-          startAt: new Date(slot.startAt).toISOString(),
-          endAt: new Date(slot.endAt).toISOString(),
-          available: remaining === null || remaining > 0,
-          remaining,
-        };
-      }),
+      windows: slots.map((slot) => ({
+        start: slot.start,
+        end: slot.end,
+        label: slot.label,
+        startAt: new Date(slot.startAt).toISOString(),
+        endAt: new Date(slot.endAt).toISOString(),
+        available: true,
+        remaining: null,
+      })),
     });
   }
   return { ...base, matches: result };
