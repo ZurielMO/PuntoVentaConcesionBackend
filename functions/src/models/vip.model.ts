@@ -86,12 +86,45 @@ export type VipFulfillment = {
   subtotalMinor: number;
 };
 
+export const VIP_ORDER_TYPES = ["IMMEDIATE", "PREORDER"] as const;
+export type VipOrderType = (typeof VIP_ORDER_TYPES)[number];
+
+export type VipPreorderInfo = {
+  matchId: string;
+  jornadaNumero: number;
+  matchDate: string;
+  matchLabel: string;
+  homeTeam: string | null;
+  awayTeam: string | null;
+  stadium: string | null;
+  kickoffAt: FirebaseFirestore.Timestamp | null;
+  /** "HH:mm" hora local del estadio (America/Mexico_City). */
+  windowStart: string;
+  windowEnd: string;
+  windowLabel: string;
+  windowStartAt: FirebaseFirestore.Timestamp;
+  windowEndAt: FirebaseFirestore.Timestamp;
+  slotId: string;
+};
+
+export const isVipPreorder = (
+  order: { orderType?: VipOrderType; preorder?: VipPreorderInfo | null },
+): order is { orderType: "PREORDER"; preorder: VipPreorderInfo } =>
+  order.orderType === "PREORDER" && Boolean(order.preorder);
+
 export type VipOrder = {
   id: string;
   orderNumber: string;
   fecha: string;
   jornadaId: string;
   matchId: string;
+  /** Ausente en órdenes legacy: se interpreta como IMMEDIATE. */
+  orderType?: VipOrderType;
+  preorder?: VipPreorderInfo | null;
+  /** Inicio de la ventana de entrega; solo existe en preventas (consulta por rango). */
+  scheduledFor?: FirebaseFirestore.Timestamp;
+  /** Código de guía público (Crockford base32, sin guion). */
+  guideCode?: string | null;
   customer: { name: string; email: string; phone: string | null };
   delivery: {
     locationId: string | null;

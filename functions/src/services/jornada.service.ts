@@ -9,6 +9,7 @@ import {
   ramaFromId,
   type JornadaRama,
 } from "./asignacion-caja.service";
+import { rememberJornadasActivas } from "./jornada-activa-cache";
 import { normalizeFecha } from "./inventario.service";
 
 const JORNADA_ACTIVA_PATH = "jornada_activa";
@@ -72,7 +73,14 @@ export const getJornadaActiva = async (): Promise<
     readNodoActivo(JORNADA_ACTIVA_PATH, "varonil"),
     readNodoActivo(JORNADA_ACTIVA_FEMENIL_PATH, "femenil"),
   ]);
-  return { ...varonil, ...femenil };
+  const activas = { ...varonil, ...femenil };
+  // El respaldo no debe tumbar la lectura en vivo si Firestore falla.
+  void rememberJornadasActivas(activas).catch((error) => {
+    console.warn("jornada_activa_cache_write_failed", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
+  });
+  return activas;
 };
 
 /** Primera entrada con activo===true de una rama (o null). */

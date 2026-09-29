@@ -3,11 +3,16 @@ import * as vipCtrl from "../controllers/vip/vip.controller";
 import { validateBody, validateQuery } from "../middleware/validation.middleware";
 import {
   vipAdminListSchema,
+  vipAdminPreordersQuerySchema,
   vipAbandonCheckoutSchema,
   vipCancelSchema,
   vipCentralZoneUnlockSchema,
   vipCheckoutSchema,
   vipConfirmSessionSchema,
+  vipGuideLookupQuerySchema,
+  vipPreorderAvailabilityQuerySchema,
+  vipPreorderSettingsSchema,
+  vipPublicSalesSchema,
   vipRunnerSchema,
   vipStatusSchema,
   vipTrackingQuerySchema,
@@ -19,9 +24,16 @@ import { requireAdminOrSuperAdmin } from "../utils/roles.middlewares";
 const router = Router();
 
 router.post("/webhooks/stripe", vipCtrl.stripeWebhook);
+router.get("/service-status", vipCtrl.getPublicServiceStatus);
 router.get("/concessions", vipCtrl.getVipCatalog);
 router.get("/concessions/:id", vipCtrl.getVipConcessionById);
 router.get("/locations", vipCtrl.getVipLocations);
+router.get(
+  "/preorders/availability",
+  validateQuery(vipPreorderAvailabilityQuerySchema, "VIP_INVALID_REQUEST"),
+  vipRateLimit("preorder_availability", 60, 60_000),
+  vipCtrl.getPreorderAvailability,
+);
 router.post(
   "/checkout",
   validateBody(vipCheckoutSchema, "VIP_INVALID_REQUEST"),
@@ -53,6 +65,13 @@ router.get(
   vipRateLimit("tracking", 60, 60_000),
   vipCtrl.tracking,
 );
+// Límite estricto por IP: la guía es el único secreto y no debe poder enumerarse.
+router.get(
+  "/orders/lookup",
+  validateQuery(vipGuideLookupQuerySchema, "VIP_INVALID_GUIDE"),
+  vipRateLimit("guide_lookup", 20, 60_000),
+  vipCtrl.lookupOrderByGuide,
+);
 router.post("/orders", vipCtrl.legacyCreateOrder);
 
 router.use("/admin", authMiddleware, requireAdminOrSuperAdmin);
@@ -60,6 +79,23 @@ router.post(
   "/admin/central-zone/unlock",
   validateBody(vipCentralZoneUnlockSchema, "VIP_INVALID_REQUEST"),
   vipCtrl.unlockCentralZone,
+);
+router.get("/admin/public-sales", vipCtrl.getAdminPublicSales);
+router.post(
+  "/admin/public-sales",
+  validateBody(vipPublicSalesSchema, "VIP_INVALID_REQUEST"),
+  vipCtrl.setAdminPublicSales,
+);
+router.get("/admin/preorder-settings", vipCtrl.getAdminPreorderSettings);
+router.post(
+  "/admin/preorder-settings",
+  validateBody(vipPreorderSettingsSchema, "VIP_INVALID_REQUEST"),
+  vipCtrl.setAdminPreorderSettings,
+);
+router.get(
+  "/admin/preorders",
+  validateQuery(vipAdminPreordersQuerySchema, "VIP_INVALID_FILTERS"),
+  vipCtrl.listAdminPreorders,
 );
 router.get("/admin/orders", validateQuery(vipAdminListSchema, "VIP_INVALID_FILTERS"), vipCtrl.listAdminOrders);
 router.get("/admin/orders/:id", vipCtrl.getAdminOrder);

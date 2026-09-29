@@ -3,6 +3,10 @@ import { firestorePos } from "../config/firebase";
 import { isAppOficial2Configured } from "../config/firebase.appoficial2";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
 import { ApiError } from "../utils/api-error";
+import {
+  applyRememberedDetails,
+  loadRememberedJornadaActiva,
+} from "./jornada-activa-cache";
 import { InventarioMovimientoTipo } from "../models";
 import {
   normalizeRama,
@@ -13,6 +17,7 @@ import {
   JornadaActivaValue,
   resolveJornadaActiva,
 } from "./jornada.service";
+import { settleInventoryQuietly } from "./vip/vip-preorder-inventory.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 
@@ -255,6 +260,7 @@ export const getOrCreateInventarioJornadaActiva = async (
     sucursalId,
     rama,
   );
+  await settleInventoryQuietly(inventario.id);
   if (!includeProductos) {
     return { inventario, jornada: detalle };
   }
@@ -318,6 +324,7 @@ const getInventarioJornadaActivaFromFirestore = async (
   };
 
   const inventario = toData(doc);
+  await settleInventoryQuietly(doc.id);
   if (!includeProductos) {
     return { inventario, jornada };
   }
@@ -332,6 +339,23 @@ const getInventarioJornadaActivaFromFirestore = async (
   };
 };
 
+const withRememberedJornada = async <T extends { jornada: JornadaActivaValue | null }>(
+  result: T,
+  rama: JornadaRama,
+): Promise<T> => {
+  try {
+    const remembered = await loadRememberedJornadaActiva(rama);
+    if (!remembered) return result;
+    if (!result.jornada) return { ...result, jornada: remembered };
+    return { ...result, jornada: applyRememberedDetails(result.jornada, remembered) };
+  } catch (error) {
+    console.warn("inventario_jornada_cache_unavailable", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
+    return result;
+  }
+};
+
 export const getInventarioJornadaActiva = async (
   sucursalId: string,
   includeProductos = true,
@@ -339,36 +363,43 @@ export const getInventarioJornadaActiva = async (
 ) => {
   const rama = normalizeRama(ramaInput);
 
-  if (!isAppOficial2Configured()) {
-    return getInventarioJornadaActivaFromFirestore(
-      sucursalId,
-      includeProductos,
-      rama,
-    );
+  if (isAppOficial2Configured()) {
+    try {
+      const { jornadaNumero, fecha, detalle } = await resolveJornadaActiva(rama);
+      await cerrarInventariosObsoletos(fecha, jornadaNumero, rama);
+      const id = buildInventarioId(fecha, jornadaNumero, sucursalId, rama);
+      const doc = await col().doc(id).get();
+
+      if (!doc.exists || doc.data()?.activo === false) {
+        return { inventario: null, jornada: detalle };
+      }
+
+      const inventario = toData(doc);
+      await settleInventoryQuietly(id);
+      if (!includeProductos) {
+        return { inventario, jornada: detalle };
+      }
+
+      const prodSnap = await productosCol(id).get();
+      return {
+        inventario: {
+          ...inventario,
+          productos: prodSnap.docs.map(toData),
+        },
+        jornada: detalle,
+      };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "JORNADA_NO_ACTIVA") throw error;
+      console.warn("inventario_jornada_activa_unavailable", {
+        message: error instanceof Error ? error.message : "unknown error",
+      });
+    }
   }
 
-  const { jornadaNumero, fecha, detalle } = await resolveJornadaActiva(rama);
-  await cerrarInventariosObsoletos(fecha, jornadaNumero, rama);
-  const id = buildInventarioId(fecha, jornadaNumero, sucursalId, rama);
-  const doc = await col().doc(id).get();
-
-  if (!doc.exists || doc.data()?.activo === false) {
-    return { inventario: null, jornada: detalle };
-  }
-
-  const inventario = toData(doc);
-  if (!includeProductos) {
-    return { inventario, jornada: detalle };
-  }
-
-  const prodSnap = await productosCol(id).get();
-  return {
-    inventario: {
-      ...inventario,
-      productos: prodSnap.docs.map(toData),
-    },
-    jornada: detalle,
-  };
+  return withRememberedJornada(
+    await getInventarioJornadaActivaFromFirestore(sucursalId, includeProductos, rama),
+    rama,
+  );
 };
 
 export const listInventarios = async (
@@ -493,7 +524,7 @@ export const upsertInventarioProducto = async (
       cantidadFinal = cantidadInicial;
     } else if (data.cantidad_final === undefined) {
       const vendido = prevInicial - prevFinal;
-      cantidadFinal = Math.max(0, cantidadInicial - vendido);
+      cantidadFinal = cantidadInicial - vendido;
     }
   }
 
@@ -529,6 +560,7 @@ export const upsertInventarioProducto = async (
   }
 
   const doc = await ref.get();
+  await settleInventoryQuietly(inventarioId);
   return toData(doc);
 };
 

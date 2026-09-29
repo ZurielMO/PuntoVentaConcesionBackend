@@ -869,6 +869,8 @@ export const computeDiferenciaCaja = (
 export const buildCorteResumen = async (
   filters: OperationalListFilters,
 ): Promise<CorteResumen> => {
+  const { settleDeferredVipSalesForCorte } = await import("./vip/vip-preorder-inventory.service");
+  await settleDeferredVipSalesForCorte(filters);
   const ventasRaw = await detalleVentaService.listDetalleVentas(filters);
   const ventas = await detalleVentaService.attachDetalleToComprobantes(ventasRaw);
   const products = filters.concesionId

@@ -1,8 +1,11 @@
 import { ApiError } from "../src/utils/api-error";
 import {
+  applyDeferredVipStock,
   confirmVipStock,
   releaseVipStock,
   reserveVipStock,
+  restoreAppliedVipStock,
+  shouldSettleDeferredPreorder,
 } from "../src/services/vip/vip-inventory.service";
 
 describe("VIP shared inventory reservation arithmetic", () => {
@@ -23,5 +26,14 @@ describe("VIP shared inventory reservation arithmetic", () => {
     expect(() => reserveVipStock(0, 1)).toThrow("stock suficiente");
     expect(() => reserveVipStock(10, 0)).toThrow(ApiError);
     expect(() => releaseVipStock(-1, 1)).toThrow(ApiError);
+  });
+
+  it("lets a deferred preorder consume stock that is not loaded yet and restores it later", () => {
+    expect(applyDeferredVipStock(0, 2)).toBe(-2);
+    expect(applyDeferredVipStock(10, 2)).toBe(8);
+    expect(restoreAppliedVipStock(-2, 2)).toBe(0);
+    expect(shouldSettleDeferredPreorder(0, "2026-09-30", "2026-09-28")).toBe(false);
+    expect(shouldSettleDeferredPreorder(4, "2026-09-30", "2026-09-28")).toBe(true);
+    expect(shouldSettleDeferredPreorder(0, "2026-09-28", "2026-09-28")).toBe(true);
   });
 });

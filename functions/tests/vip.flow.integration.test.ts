@@ -106,9 +106,13 @@ const mockStripe = {
   refunds: { create: mockRefundCreate },
 };
 
+const mockGetJornadaActiva = jest.fn(async (): Promise<Record<string, Row>> => ({}));
+const mockBusinessDate = jest.fn(() => "2026-08-26");
+
 jest.mock("../src/config/firebase", () => ({ firestorePos: mockDb }));
 jest.mock("../src/services/jornada.service", () => ({
   resolveJornadaPrimaria: jest.fn(async () => ({ fecha: "2026-08-26", jornadaNumero: 1 })),
+  getJornadaActiva: () => mockGetJornadaActiva(),
 }));
 jest.mock("../src/services/asignacion-caja.service", () => ({
   buildJornadaId: () => "jornada-1",
@@ -128,12 +132,13 @@ jest.mock("../src/config/vip.config", () => {
   return {
     ...actual,
     getVipStripeClient: () => mockStripe,
-    getVipBusinessDate: () => "2026-08-26",
+    getVipBusinessDate: () => mockBusinessDate(),
   };
 });
 jest.mock("../src/services/vip/vip-email.service", () => ({
   sendVipOrderPaidEmail: jest.fn(async () => true),
   sendVipOrderDeliveredEmail: jest.fn(async () => true),
+  sendVipPreorderOnTheWayEmail: jest.fn(async () => true),
 }));
 
 const checkoutInput = () => ({
@@ -179,10 +184,13 @@ const seed = (overrides: { service?: Row; location?: Row; product?: Row; stock?:
 };
 
 describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockRows.clear();
     mockAutoId = 0;
     jest.clearAllMocks();
+    mockBusinessDate.mockImplementation(() => "2026-08-26");
+    mockGetJornadaActiva.mockImplementation(async () => ({}));
+    (await import("../src/services/vip/vip-preorder.service")).clearVipPreorderCache();
     process.env.VIP_TRACKING_SECRET = "test-secret-at-least-32-characters-long";
     process.env.STRIPE_WEBHOOK_SECRET = "unit_test_flow_webhook_secret";
     process.env.VIP_CHECKOUT_SUCCESS_URL = "https://example.com/success";
@@ -285,7 +293,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     });
   });
 
-  it("uses the open POS inventory even when jornada_fecha is the match date, not today", async () => {
+  it("rejects immediate delivery when the open inventory belongs to another match", async () => {
     mockRows.set("inventarios/inv-1", {
       activo: true,
       sucursal_id: "s1",
@@ -293,14 +301,18 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       jornada_numero: 8,
       updatedAt: Timestamp.fromMillis(Date.now()),
     });
-    const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
+    const { listCatalog, createCheckout, getPublicSalesStatus } = await import("../src/services/vip/vip.service");
     const catalog = await listCatalog();
-    // Aunque la `jornada_fecha` no coincida con el `businessDate`, el header sigue
-    // marcado como `activo=true`, así que el POS inventario debe usarse.
-    expect(catalog[0].products[0]).toMatchObject({ available: true });
-    const checkout = await createCheckout(checkoutInput(), "checkout-match-date");
-    expect(checkout.orderId).toBeDefined();
-    expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
+    expect(catalog[0].products[0]).toMatchObject({ available: false });
+    await expect(getPublicSalesStatus()).resolves.toMatchObject({
+      acceptingOrders: true,
+      matchDay: false,
+      liveOrdersOpen: false,
+    });
+    await expect(createCheckout(checkoutInput(), "checkout-match-date")).rejects.toMatchObject({
+      code: "VIP_NOT_MATCH_DAY",
+    });
+    expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
   });
 
   it("abandons an unpaid checkout and restores the open jornada stock", async () => {
@@ -325,7 +337,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     expect(mockSessionExpire).toHaveBeenCalled();
   });
 
-  it("does not restore stock to a closed jornada and sells on the new open inventory", async () => {
+  it("does not restore stock to a closed jornada or sell another match inventory", async () => {
     const { createCheckout, abandonCheckout } = await import("../src/services/vip/vip.service");
     const first = await createCheckout(checkoutInput(), "checkout-old-jornada");
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
@@ -350,11 +362,10 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     });
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);
     expect(mockRows.get("inventarios/inv-2/productos/p1")?.cantidad_final).toBe(10);
-    // El nuevo header de POS está activo, aunque su `jornada_fecha` no sea hoy,
-    // así que debe permitir el checkout contra el inventario abierto más reciente.
-    const checkout = await createCheckout(checkoutInput(), "checkout-new-jornada");
-    expect(checkout.orderId).toBeDefined();
-    expect(mockRows.get("inventarios/inv-2/productos/p1")?.cantidad_final).toBe(8);
+    await expect(createCheckout(checkoutInput(), "checkout-new-jornada")).rejects.toMatchObject({
+      code: "VIP_OUT_OF_STOCK",
+    });
+    expect(mockRows.get("inventarios/inv-2/productos/p1")?.cantidad_final).toBe(10);
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);
   });
 
@@ -369,7 +380,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const catalog = await listCatalog();
     expect(catalog[0].products[0].available).toBe(false);
     await expect(createCheckout(checkoutInput(), "checkout-other-day")).rejects.toMatchObject({
-      code: "VIP_OUT_OF_STOCK",
+      code: "VIP_NOT_MATCH_DAY",
     });
   });
 
@@ -424,8 +435,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
   it.each([
     ["missing product", () => mockRows.delete("products/p1"), "VIP_PRODUCT_NOT_FOUND"],
     ["out of stock", () => mockRows.set("inventarios/inv-1/productos/p1", { cantidad_final: 0, precio_jornada: 100 }), "VIP_OUT_OF_STOCK"],
-    ["missing inventory line", () => mockRows.delete("inventarios/inv-1/productos/p1"), "VIP_OUT_OF_STOCK"],
-    ["no inventory for the day", () => mockRows.delete("inventarios/inv-1"), "VIP_OUT_OF_STOCK"],
+    ["no inventory for the day", () => mockRows.delete("inventarios/inv-1"), "VIP_NOT_MATCH_DAY"],
     ["closed service", () => mockRows.set("vip_service_configs/2026-08-26", { ...mockRows.get("vip_service_configs/2026-08-26"), enabled: false }), "VIP_SERVICE_CLOSED"],
     ["capacity reached", () => mockRows.set("vip_service_configs/2026-08-26", { ...mockRows.get("vip_service_configs/2026-08-26"), activeOrderCount: 5 }), "VIP_CAPACITY_REACHED"],
   ])("rejects %s before Stripe", async (_name, mutate, code) => {
@@ -433,6 +443,18 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const { createCheckout } = await import("../src/services/vip/vip.service");
     await expect(createCheckout(checkoutInput(), `checkout-${code}`)).rejects.toMatchObject({ code });
     expect(mockSessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects an immediate sale when the open jornada has no product line", async () => {
+    mockRows.delete("inventarios/inv-1/productos/p1");
+    const { listCatalog, createCheckout } = await import("../src/services/vip/vip.service");
+    const catalog = await listCatalog();
+    expect(catalog[0].products[0]).toMatchObject({ available: false, awaitingInventory: true });
+    await expect(createCheckout(checkoutInput(), "checkout-awaiting-line")).rejects.toMatchObject({
+      code: "VIP_OUT_OF_STOCK",
+    });
+    expect(mockSessionCreate).not.toHaveBeenCalled();
+    expect(mockRows.has("inventarios/inv-1/productos/p1")).toBe(false);
   });
 
   it("confirms a signed paid event once, records deterministic sale, then refunds once", async () => {
@@ -678,7 +700,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     const catalog = await listCatalog();
     expect(catalog[0].products[0]).toMatchObject({ name: "Hamburguesa", price: 999, available: false });
     await expect(createCheckout(checkoutInput(), "checkout-no-inventory")).rejects.toMatchObject({
-      code: "VIP_OUT_OF_STOCK",
+      code: "VIP_NOT_MATCH_DAY",
     });
   });
 
@@ -767,6 +789,256 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       .rejects.toMatchObject({ code: "VIP_INVALID_STATE_TRANSITION" });
     await expect(service.transitionOrder(checkout.orderId, VipOrderStatus.PAID, actor))
       .rejects.toMatchObject({ code: "VIP_INVALID_STATE_TRANSITION" });
+  });
+
+  it("closes public sales with the zone password and still fulfills paid orders", async () => {
+    process.env.VIP_CENTRAL_ZONE_PASSWORD = "Palcos.2026";
+    const service = await import("../src/services/vip/vip.service");
+    await expect(service.getPublicSalesStatus()).resolves.toEqual({
+      acceptingOrders: true,
+      matchDay: true,
+      liveOrdersOpen: true,
+      preordersEnabled: true,
+      preordersOpen: false,
+    });
+
+    const checkout = await service.createCheckout(checkoutInput(), "checkout-public-sales");
+    await confirmPaid(service, checkout.orderId, "evt_paid_public_sales");
+    const before = { ...mockRows.get("vip_service_configs/2026-08-26") };
+    await expect(service.setPublicSalesStatus("wrong", false, "admin-1")).rejects.toMatchObject({
+      code: "VIP_INVALID_ZONE_PASSWORD",
+    });
+    expect(mockRows.get("vip_service_configs/2026-08-26")).toEqual(before);
+
+    await service.setPublicSalesStatus("Palcos.2026", false, "admin-1");
+    const paused = mockRows.get("vip_service_configs/2026-08-26");
+    expect(paused?.acceptingOrders).toBe(false);
+    expect(paused?.activeOrderCount).toBe(before.activeOrderCount);
+    expect(paused?.enabled).toBe(true);
+    expect(paused?.maxActiveOrders).toBe(5);
+    expect(paused?.updatedBy).toBe("admin-1");
+
+    const stripeCalls = mockSessionCreate.mock.calls.length;
+    await expect(service.createCheckout(checkoutInput(), "checkout-public-sales-closed")).rejects.toMatchObject({
+      code: "VIP_SERVICE_PAUSED",
+    });
+    expect(mockSessionCreate).toHaveBeenCalledTimes(stripeCalls);
+
+    const accepted = await service.transitionOrder(checkout.orderId, VipOrderStatus.ACCEPTED, actor);
+    expect(accepted.status).toBe(VipOrderStatus.ON_THE_WAY);
+    const delivered = await service.transitionOrder(checkout.orderId, VipOrderStatus.DELIVERED, actor);
+    expect(delivered.status).toBe(VipOrderStatus.DELIVERED);
+
+    const countAfterDelivery = mockRows.get("vip_service_configs/2026-08-26")?.activeOrderCount;
+    await service.setPublicSalesStatus("Palcos.2026", true, "admin-1");
+    const reopened = mockRows.get("vip_service_configs/2026-08-26");
+    expect(reopened?.acceptingOrders).toBe(true);
+    expect(reopened?.activeOrderCount).toBe(countAfterDelivery);
+    expect(reopened?.maxActiveOrders).toBe(5);
+    await expect(service.getPublicSalesStatus()).resolves.toEqual({
+      acceptingOrders: true,
+      matchDay: true,
+      liveOrdersOpen: true,
+      preordersEnabled: true,
+      preordersOpen: false,
+    });
+  });
+
+  it("limits preorder windows to 50 minutes around the active jornada kickoff", async () => {
+    mockBusinessDate.mockImplementation(() => "2026-09-28");
+    mockGetJornadaActiva.mockImplementation(async () => ({
+      "varonil:Jornada12": {
+        activo: true,
+        rama: "varonil",
+        jornada: 12,
+        fecha: "17/10/2027",
+        hora: "19:00",
+        equipo_local: "León",
+        equipo_visitante: "America",
+        estadio: "León",
+      },
+    }));
+    const preorder = await import("../src/services/vip/vip-preorder.service");
+    preorder.clearVipPreorderCache();
+    const availability = await preorder.getPreorderAvailability("Poniente");
+    expect(availability.matches).toHaveLength(1);
+    expect(availability.matches[0]).toMatchObject({
+      jornadaNumero: 12,
+      matchDate: "2027-10-17",
+      matchLabel: "León vs America",
+    });
+    expect(availability.matches[0].windows.map((window) => window.label)).toEqual([
+      "18:10 – 18:35", "18:40 – 19:05", "19:10 – 19:35",
+    ]);
+  });
+
+  it("keeps the cached jornada when acreditaciones is unavailable", async () => {
+    mockBusinessDate.mockImplementation(() => "2026-09-28");
+    mockGetJornadaActiva.mockRejectedValue(new Error("acreditaciones unavailable"));
+    mockRows.set("jornada_activa_cache/varonil", {
+      activo: true,
+      rama: "varonil",
+      jornada: 12,
+      fecha: "17/10/2027",
+      hora: "19:00",
+      equipo_local: "León",
+      equipo_visitante: "America",
+      estadio: "León",
+    });
+    const preorder = await import("../src/services/vip/vip-preorder.service");
+    preorder.clearVipPreorderCache();
+    const availability = await preorder.getPreorderAvailability("Poniente");
+    expect(availability.matches).toHaveLength(1);
+    expect(availability.matches[0]).toMatchObject({
+      jornadaNumero: 12,
+      matchDate: "2027-10-17",
+      matchLabel: "León vs America",
+    });
+    expect(availability.matches[0].windows.map((window) => window.label)).toEqual([
+      "18:10 – 18:35", "18:40 – 19:05", "19:10 – 19:35",
+    ]);
+  });
+
+  it("does not revive a cached jornada when acreditaciones reports none active", async () => {
+    mockBusinessDate.mockImplementation(() => "2026-09-28");
+    mockGetJornadaActiva.mockImplementation(async () => ({}));
+    mockRows.set("jornada_activa_cache/varonil", {
+      activo: true,
+      rama: "varonil",
+      jornada: 12,
+      fecha: "17/10/2027",
+      hora: "19:00",
+      equipo_local: "León",
+      equipo_visitante: "America",
+    });
+    const preorder = await import("../src/services/vip/vip-preorder.service");
+    preorder.clearVipPreorderCache();
+    const availability = await preorder.getPreorderAvailability("Poniente");
+    expect(availability.matches).toHaveLength(0);
+  });
+
+  it("fills the kickoff from cache when the live jornada has no start time", async () => {
+    mockBusinessDate.mockImplementation(() => "2026-09-28");
+    mockGetJornadaActiva.mockImplementation(async () => ({
+      "varonil:Jornada12": {
+        activo: true,
+        rama: "varonil",
+        jornada: 12,
+        fecha: "2027-10-17",
+      },
+    }));
+    mockRows.set("jornada_activa_cache/varonil", {
+      activo: true,
+      rama: "varonil",
+      jornada: 12,
+      fecha: "17/10/2027",
+      hora: "19:00",
+      equipo_local: "León",
+      equipo_visitante: "America",
+    });
+    const preorder = await import("../src/services/vip/vip-preorder.service");
+    preorder.clearVipPreorderCache();
+    const availability = await preorder.getPreorderAvailability("Poniente");
+    expect(availability.matches[0]).toMatchObject({ matchLabel: "León vs America" });
+    expect(availability.matches[0].windows.map((window) => window.start)).toEqual(["18:10", "18:40", "19:10"]);
+  });
+
+  it("opens immediate delivery on a scheduled match day and closes it on any other day", async () => {
+    const service = await import("../src/services/vip/vip.service");
+    mockBusinessDate.mockImplementation(() => "2026-08-27");
+    mockRows.set("vip_service_configs/2026-08-27", {
+      enabled: true,
+      acceptingOrders: true,
+      maxActiveOrders: 5,
+      activeOrderCount: 0,
+    });
+    await expect(service.getPublicSalesStatus()).resolves.toMatchObject({
+      acceptingOrders: true,
+      matchDay: false,
+      liveOrdersOpen: false,
+    });
+    await expect(service.createCheckout(checkoutInput(), "checkout-not-match-day")).rejects.toMatchObject({
+      code: "VIP_NOT_MATCH_DAY",
+    });
+    expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
+
+    mockGetJornadaActiva.mockImplementation(async () => ({
+      "varonil:Jornada9": {
+        activo: true,
+        rama: "varonil",
+        jornada: 9,
+        fecha: "27/08/2026",
+        hora: "21:00",
+        equipo_local: "León",
+        equipo_visitante: "América",
+      },
+    }));
+    (await import("../src/services/vip/vip-preorder.service")).clearVipPreorderCache();
+    await expect(service.getPublicSalesStatus()).resolves.toMatchObject({
+      matchDay: true,
+      liveOrdersOpen: true,
+    });
+    mockRows.set("inventarios/inv-match", {
+      activo: true,
+      sucursal_id: "s1",
+      jornada_fecha: "2026-08-27",
+      jornada_numero: 9,
+    });
+    mockRows.set("inventarios/inv-match/productos/p1", { cantidad_final: 6, precio_jornada: 100 });
+    await service.createCheckout(checkoutInput(), "checkout-match-day");
+    expect(mockRows.get("inventarios/inv-match/productos/p1")?.cantidad_final).toBe(4);
+    expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
+
+    mockRows.set("vip_service_configs/2026-08-27", {
+      enabled: true,
+      acceptingOrders: false,
+      maxActiveOrders: 5,
+      activeOrderCount: 0,
+    });
+    await expect(service.getPublicSalesStatus()).resolves.toMatchObject({
+      acceptingOrders: false,
+      matchDay: true,
+      liveOrdersOpen: false,
+    });
+    await expect(service.createCheckout(checkoutInput(), "checkout-switch-off-match-day")).rejects.toMatchObject({
+      code: "VIP_SERVICE_PAUSED",
+    });
+    expect(mockRows.get("inventarios/inv-match/productos/p1")?.cantidad_final).toBe(4);
+  });
+
+  it("reads a closed default config and copies its limits onto the business date", async () => {
+    process.env.VIP_CENTRAL_ZONE_PASSWORD = "Palcos.2026";
+    mockRows.delete("vip_service_configs/2026-08-26");
+    mockRows.set("vip_service_configs/default", {
+      enabled: true,
+      acceptingOrders: false,
+      maxActiveOrders: 9,
+      activeOrderCount: 2,
+    });
+    const service = await import("../src/services/vip/vip.service");
+    await expect(service.getPublicSalesStatus()).resolves.toEqual({
+      acceptingOrders: false,
+      matchDay: true,
+      liveOrdersOpen: false,
+      preordersEnabled: true,
+      preordersOpen: false,
+    });
+    await expect(service.createCheckout(checkoutInput(), "checkout-default-closed")).rejects.toMatchObject({
+      code: "VIP_SERVICE_PAUSED",
+    });
+    await service.setPublicSalesStatus("Palcos.2026", true, "admin-2");
+    expect(mockRows.get("vip_service_configs/default")).toMatchObject({
+      acceptingOrders: false,
+      activeOrderCount: 2,
+    });
+    expect(mockRows.get("vip_service_configs/2026-08-26")).toMatchObject({
+      acceptingOrders: true,
+      enabled: true,
+      maxActiveOrders: 9,
+      activeOrderCount: 2,
+      updatedBy: "admin-2",
+      fecha: "2026-08-26",
+    });
   });
 
   it("confirms a paid Stripe session without waiting for the webhook", async () => {
@@ -992,5 +1264,408 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       code: "VIP_INVALID_LOCATION",
     });
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
+  });
+
+  describe("preventa de pedidos", () => {
+    const stadiumDate = (millis: number) => {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Mexico_City", year: "numeric", month: "2-digit", day: "2-digit",
+      }).formatToParts(new Date(millis)).map((part) => [part.type, part.value]));
+      return `${parts.year}-${parts.month}-${parts.day}`;
+    };
+    const today = stadiumDate(Date.now());
+    const matchDate = stadiumDate(Date.now() + 3 * 24 * 60 * 60_000);
+    const slotPath = (window: string) => `vip_preorder_slots/jornada-1__Poniente__${window}`;
+    const preorderInput = (windowStart = "18:10") => ({
+      ...checkoutInput(),
+      preorder: { matchId: "jornada-1", windowStart },
+    });
+
+    beforeEach(() => {
+      mockBusinessDate.mockImplementation(() => today);
+      mockGetJornadaActiva.mockImplementation(async () => ({
+        "varonil:Jornada11": {
+          activo: true,
+          rama: "varonil",
+          jornada: 11,
+          fecha: matchDate,
+          hora: "19:00 hrs",
+          equipo_local: "León",
+          equipo_visitante: "Puebla",
+          estadio: "Estadio León",
+        },
+      }));
+    });
+
+    it("offers only future delivery windows of at least 25 minutes for the active match", async () => {
+      const { getPreorderAvailability } = await import("../src/services/vip/vip-preorder.service");
+      const availability = await getPreorderAvailability("Poniente");
+      expect(availability.enabled).toBe(true);
+      expect(availability.matches).toHaveLength(1);
+      const [match] = availability.matches;
+      expect(match).toMatchObject({ matchId: "jornada-1", jornadaNumero: 11, matchLabel: "León vs Puebla" });
+      expect(match.windows.map((row) => row.label)).toEqual([
+        "18:10 – 18:35", "18:40 – 19:05", "19:10 – 19:35",
+      ]);
+      for (const window of match.windows) {
+        expect(Date.parse(window.endAt) - Date.parse(window.startAt)).toBeGreaterThanOrEqual(25 * 60_000);
+        expect(window.remaining).toBe(12);
+      }
+      const service = await import("../src/services/vip/vip.service");
+      await expect(service.getPublicSalesStatus()).resolves.toMatchObject({
+        preordersEnabled: true,
+        preordersOpen: true,
+      });
+    });
+
+    it("schedules a preorder against its window even while live sales are paused", async () => {
+      mockRows.set(`vip_service_configs/${today}`, {
+        ...mockRows.get("vip_service_configs/2026-08-26"),
+        acceptingOrders: false,
+      });
+      mockRows.set("inventarios/inv-1", {
+        ...mockRows.get("inventarios/inv-1"),
+        activo: true,
+        jornada_fecha: today,
+      });
+      const service = await import("../src/services/vip/vip.service");
+      await expect(service.createCheckout(checkoutInput(), "checkout-live-paused"))
+        .rejects.toMatchObject({ code: "VIP_SERVICE_PAUSED" });
+
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-001");
+      const order = mockRows.get(`vip_orders/${checkout.orderId}`);
+      expect(order).toMatchObject({
+        orderType: "PREORDER",
+        fecha: matchDate,
+        matchId: "jornada-1",
+        status: "PENDING_PAYMENT",
+        preorder: { windowStart: "18:10", windowEnd: "18:35", jornadaNumero: 11, slotId: "jornada-1__Poniente__1810" },
+      });
+      expect(order?.orderNumber).toMatch(/^PREV-\d{8}-/);
+      expect(order?.scheduledFor?.toMillis()).toBe(order?.preorder.windowStartAt.toMillis());
+      expect(order?.guideCode).toMatch(/^[0-9A-HJKMNP-TV-Z]{8}$/);
+      expect(mockRows.get(`vip_order_guides/${order?.guideCode}`)).toMatchObject({ orderId: checkout.orderId });
+      expect(mockRows.get(slotPath("1810"))?.count).toBe(1);
+      expect(mockRows.get(`vip_service_configs/${today}`)?.activeOrderCount).toBe(0);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
+      expect(mockSessionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ orderType: "PREORDER", matchId: "jornada-1" }),
+          line_items: [expect.objectContaining({
+            price_data: expect.objectContaining({
+              unit_amount: 26450,
+              product_data: expect.objectContaining({ name: expect.stringContaining("Preventa") }),
+            }),
+          })],
+        }),
+        expect.anything(),
+      );
+    });
+
+    it("pays straight into the scheduled state, tracks by guide and frees the window on refund", async () => {
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput("18:40"), "checkout-preorder-paid");
+      await confirmPaid(service, checkout.orderId, "evt_paid_preorder");
+      const orderPath = `vip_orders/${checkout.orderId}`;
+      expect(mockRows.get(orderPath)?.status).toBe("ACCEPTED");
+      expect(mockRows.get(orderPath)?.timestamps.acceptedAt).toBeDefined();
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toMatchObject({
+        vipOrderType: "PREORDER",
+        vipMatchId: "jornada-1",
+      });
+      expect(sendVipOrderPaidEmail).toHaveBeenCalledTimes(1);
+
+      const guide = String(mockRows.get(orderPath)?.guideCode);
+      const tracked = await service.lookupOrderByGuide(`${guide.slice(0, 4).toLowerCase()}-${guide.slice(4)}`);
+      expect(tracked).toMatchObject({
+        orderType: "PREORDER",
+        status: "ACCEPTED",
+        paymentStatus: "PAID",
+        guideCode: `${guide.slice(0, 4)}-${guide.slice(4)}`,
+        customer: { name: "Cliente" },
+        preorder: { windowLabel: "18:40 – 19:05" },
+      });
+      expect(JSON.stringify(tracked)).not.toContain("cliente@example.com");
+      expect(JSON.stringify(tracked)).not.toContain("4771234567");
+      await expect(service.lookupOrderByGuide("ZZZZ-ZZZZ")).rejects.toMatchObject({ code: "VIP_ORDER_NOT_FOUND" });
+      await expect(service.lookupOrderByGuide("abc")).rejects.toMatchObject({ code: "VIP_INVALID_GUIDE" });
+
+      const preparing = await service.transitionOrder(checkout.orderId, VipOrderStatus.PREPARING, actor);
+      expect(preparing.status).toBe(VipOrderStatus.PREPARING);
+      expect(mockRows.get(slotPath("1840"))?.count).toBe(1);
+      const onTheWay = await service.transitionOrder(checkout.orderId, VipOrderStatus.ON_THE_WAY, actor);
+      expect(onTheWay.status).toBe(VipOrderStatus.ON_THE_WAY);
+      const { sendVipPreorderOnTheWayEmail } = await import("../src/services/vip/vip-email.service");
+      expect(sendVipPreorderOnTheWayEmail).toHaveBeenCalledTimes(1);
+      expect(mockRows.get("vip_service_configs/2026-08-26")?.activeOrderCount).toBe(0);
+
+      await service.cancelOrder(checkout.orderId, "Cliente ya no asistirá", actor);
+      expect(mockRows.get(orderPath)?.payment.status).toBe("REFUNDED");
+      expect(mockRows.get(slotPath("1840"))?.count).toBe(0);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
+    });
+
+    it("never auto-dispatches a paid preorder when Central sends ACCEPTED", async () => {
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-accept");
+      await confirmPaid(service, checkout.orderId, "evt_paid_preorder_accept");
+      const same = await service.transitionOrder(checkout.orderId, VipOrderStatus.ACCEPTED, actor);
+      expect(same.status).toBe(VipOrderStatus.ACCEPTED);
+    });
+
+    it.each([
+      ["a full window", () => mockRows.set(slotPath("1910"), { count: 12 }), "19:10", "VIP_PREORDER_WINDOW_FULL"],
+      ["a misaligned window", () => undefined, "19:00", "VIP_PREORDER_WINDOW_INVALID"],
+      ["disabled preorders", () => mockRows.set("vip_preorder_configs/default", { enabled: false }), "18:10", "VIP_PREORDER_CLOSED"],
+      ["a disabled match", () => mockRows.set("vip_preorder_configs/jornada-1", { enabled: false }), "18:10", "VIP_PREORDER_MATCH_UNAVAILABLE"],
+      ["an inactive match", () => mockGetJornadaActiva.mockImplementation(async () => ({})), "18:10", "VIP_PREORDER_MATCH_UNAVAILABLE"],
+      ["a closed service for the match date", () => mockRows.set(`vip_service_configs/${matchDate}`, { enabled: false }), "18:10", "VIP_SERVICE_CLOSED"],
+    ])("rejects %s before reserving stock or calling Stripe", async (_name, mutate, windowStart, code) => {
+      mutate();
+      const service = await import("../src/services/vip/vip.service");
+      await expect(service.createCheckout(preorderInput(windowStart), `checkout-${code}-${windowStart}`))
+        .rejects.toMatchObject({ code });
+      expect(mockSessionCreate).not.toHaveBeenCalled();
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(5);
+    });
+
+    it("rejects windows that start inside the minimum lead time", async () => {
+      mockGetJornadaActiva.mockImplementation(async () => ({
+        "varonil:Jornada11": {
+          activo: true, rama: "varonil", jornada: 11, fecha: today, hora: "00:30",
+        },
+      }));
+      mockRows.set("vip_preorder_configs/jornada-1", { windowStart: "00:00", windowEnd: "23:59" });
+      const { getPreorderAvailability } = await import("../src/services/vip/vip-preorder.service");
+      const availability = await getPreorderAvailability("Poniente");
+      const minStart = Date.now() + 45 * 60_000;
+      for (const window of availability.matches[0]?.windows || []) {
+        expect(Date.parse(window.startAt)).toBeGreaterThanOrEqual(minStart - 1000);
+      }
+    });
+
+    it("lists only paid preorders of the Central zone, ordered by delivery window", async () => {
+      const service = await import("../src/services/vip/vip.service");
+      const late = await service.createCheckout(preorderInput("19:10"), "checkout-board-late");
+      await confirmPaid(service, late.orderId, "evt_board_late");
+      const early = await service.createCheckout(preorderInput("18:10"), "checkout-board-early");
+      await confirmPaid(service, early.orderId, "evt_board_early");
+      mockRows.get("inventarios/inv-1/productos/p1")!.cantidad_final = 10;
+      const unpaid = await service.createCheckout(preorderInput("18:40"), "checkout-board-unpaid");
+      mockRows.set("vip_service_configs/2026-08-26", {
+        ...mockRows.get("vip_service_configs/2026-08-26"),
+        opensAt: Timestamp.fromMillis(Date.now() - 60_000),
+        closesAt: Timestamp.fromMillis(Date.now() + 60_000),
+      });
+      mockBusinessDate.mockImplementation(() => "2026-08-26");
+      const immediate = await service.createCheckout(checkoutInput(), "checkout-board-immediate");
+      await confirmPaid(service, immediate.orderId, "evt_board_immediate");
+      mockBusinessDate.mockImplementation(() => today);
+
+      const board = await service.listAdminPreorders({ zona: "Poniente" });
+      expect(board.data.map((row) => row.id)).toEqual([early.orderId, late.orderId]);
+      expect(board.data.some((row) => row.id === unpaid.orderId || row.id === immediate.orderId)).toBe(false);
+      await expect(service.listAdminPreorders({ zona: "Oriente" })).resolves.toMatchObject({ data: [] });
+    });
+
+    it("toggles preorders only with the Central password", async () => {
+      process.env.VIP_CENTRAL_ZONE_PASSWORD = "Palcos.2026";
+      const service = await import("../src/services/vip/vip.service");
+      await expect(service.setAdminPreorderSettings("wrong", false, "admin-1"))
+        .rejects.toMatchObject({ code: "VIP_INVALID_ZONE_PASSWORD" });
+      const closed = await service.setAdminPreorderSettings("Palcos.2026", false, "admin-1");
+      expect(closed.enabled).toBe(false);
+      expect(mockRows.get("vip_preorder_configs/default")).toMatchObject({ enabled: false, updatedBy: "admin-1" });
+      await expect(service.getPublicSalesStatus()).resolves.toMatchObject({
+        preordersEnabled: false,
+        preordersOpen: false,
+      });
+    });
+
+    it("keeps a preorder without stock off any other open inventory until that match is loaded", async () => {
+      mockRows.set("inventarios/inv-1/productos/p1", {
+        cantidad_inicial: 0,
+        cantidad_final: 0,
+        precio_jornada: 100,
+      });
+      mockRows.set("sucursales/s-other", { activo: true, concesion_id: "c1" });
+      mockRows.set("inventarios/inv-other", {
+        activo: true,
+        sucursal_id: "s-other",
+        rama: "varonil",
+        jornada_fecha: today,
+        jornada_numero: 1,
+      });
+      mockRows.set("inventarios/inv-other/productos/p1", {
+        cantidad_inicial: 0,
+        cantidad_final: 0,
+        precio_jornada: 100,
+      });
+      const service = await import("../src/services/vip/vip.service");
+      await expect(service.createCheckout(checkoutInput(), "checkout-live-without-stock"))
+        .rejects.toMatchObject({ code: "VIP_OUT_OF_STOCK" });
+
+      mockRows.set("inventarios/inv-other/productos/p1", {
+        cantidad_inicial: 20,
+        cantidad_final: 20,
+        precio_jornada: 100,
+      });
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-deferred");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);
+      expect(mockRows.get("inventarios/inv-other/productos/p1")?.cantidad_final).toBe(20);
+      const reservation = [...mockRows.entries()].find(([path, row]) =>
+        path.startsWith("vip_reservations/") && row.orderId === checkout.orderId,
+      )?.[1];
+      expect(reservation).toMatchObject({
+        inventoryDeferred: true,
+        inventoryApplied: false,
+        inventoryId: "inv-1",
+        status: "ACTIVE",
+      });
+
+      await service.cancelOrder(checkout.orderId, "El cliente cerró el pago", actor);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);
+      expect(mockRows.get("inventarios/inv-other/productos/p1")?.cantidad_final).toBe(20);
+      expect(mockRows.get(slotPath("1810"))?.count).toBe(0);
+    });
+
+    it("prices a deferred preorder from the catalog when the match has no product line", async () => {
+      mockRows.delete("inventarios/inv-1/productos/p1");
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-missing-line");
+      const order = mockRows.get(`vip_orders/${checkout.orderId}`);
+      expect(order?.items[0]).toMatchObject({ productId: "p1", unitPrice: 1014 });
+      const reservation = [...mockRows.entries()].find(([path, row]) =>
+        path.startsWith("vip_reservations/") && row.orderId === checkout.orderId,
+      )?.[1];
+      expect(reservation).toMatchObject({
+        inventoryDeferred: true,
+        inventoryApplied: false,
+        inventoryId: "inv-1",
+      });
+      expect(checkout.checkoutUrl).toEqual(expect.any(String));
+    });
+
+    it("posts a paid preorder into that match inventory once stock is loaded, and restores it on refund", async () => {
+      mockRows.set("inventarios/inv-1/productos/p1", {
+        cantidad_inicial: 0,
+        cantidad_final: 0,
+        precio_jornada: 100,
+      });
+      mockRows.set("sucursales/s-other", { activo: true, concesion_id: "c1" });
+      mockRows.set("inventarios/inv-other", {
+        activo: true,
+        sucursal_id: "s-other",
+        rama: "varonil",
+        jornada_fecha: today,
+        jornada_numero: 9,
+      });
+      mockRows.set("inventarios/inv-other/productos/p1", {
+        cantidad_inicial: 20,
+        cantidad_final: 20,
+        precio_jornada: 50,
+      });
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput("18:40"), "checkout-preorder-settle");
+      await confirmPaid(service, checkout.orderId, "evt_preorder_deferred_paid");
+      const orderPath = `vip_orders/${checkout.orderId}`;
+      expect(mockRows.get(orderPath)?.status).toBe("ACCEPTED");
+      expect(mockRows.get(orderPath)?.salesRecorded).toBe(false);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toBeUndefined();
+      expect(mockRows.get("inventarios/inv-other/productos/p1")?.cantidad_final).toBe(20);
+
+      const { applyDeferredVipInventory } = await import("../src/services/vip/vip-preorder-inventory.service");
+      await applyDeferredVipInventory("inv-1");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(0);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toBeUndefined();
+
+      mockRows.set("inventarios/inv-1/productos/p1", {
+        ...mockRows.get("inventarios/inv-1/productos/p1"),
+        cantidad_inicial: 10,
+        cantidad_final: 10,
+        precio_jornada: 100,
+      });
+      await applyDeferredVipInventory("inv-1");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(8);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toMatchObject({
+        vipOrderType: "PREORDER",
+        inventarioId: "inv-1",
+        jornadaId: "jornada-1",
+      });
+      expect(mockRows.get("inventarios/inv-other/productos/p1")?.cantidad_final).toBe(20);
+      const posted = [...mockRows.entries()].some(([path, row]) =>
+        path.startsWith("inventarios/inv-1/movimientos/") && row.tipo === "VENTA" && row.cantidad === -2,
+      );
+      expect(posted).toBe(true);
+
+      await service.cancelOrder(checkout.orderId, "El palco canceló", actor);
+      expect(mockRows.get(orderPath)?.payment.status).toBe("REFUNDED");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(10);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)?.status).toBe("REFUNDED");
+    });
+
+    it("applies a paid preorder on match day even when the loaded stock is still zero", async () => {
+      mockRows.set("inventarios/inv-1/productos/p1", {
+        cantidad_inicial: 0,
+        cantidad_final: 0,
+        precio_jornada: 100,
+      });
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-matchday");
+      await confirmPaid(service, checkout.orderId, "evt_preorder_matchday");
+      mockBusinessDate.mockImplementation(() => matchDate);
+      const { applyDeferredVipInventory } = await import("../src/services/vip/vip-preorder-inventory.service");
+      await applyDeferredVipInventory("inv-1");
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+      expect(mockRows.get(`comprobantes_venta/vip_${checkout.orderId}_c1`)).toMatchObject({
+        inventarioId: "inv-1",
+        vipOrderType: "PREORDER",
+      });
+
+      mockRows.set("inventarios/inv-1", { ...mockRows.get("inventarios/inv-1"), activo: false });
+      await service.cancelOrder(checkout.orderId, "Inventario ya cerrado", actor);
+      expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(-2);
+    });
+
+    it("keeps a paid preorder when the match inventory header does not exist yet", async () => {
+      mockRows.delete("inventarios/inv-1");
+      mockRows.delete("inventarios/inv-1/productos/p1");
+      const service = await import("../src/services/vip/vip.service");
+      const checkout = await service.createCheckout(preorderInput(), "checkout-preorder-missing-header");
+      const created = mockRows.get(`vip_orders/${checkout.orderId}`);
+      const payload = JSON.stringify({
+        id: "evt_preorder_missing_header",
+        object: "event",
+        api_version: "2025-02-24.acacia",
+        created: 1,
+        data: {
+          object: {
+            id: "pi_preorder_missing_header",
+            object: "payment_intent",
+            amount_received: created?.totalMinor,
+            currency: String(created?.currency || "mxn").toLowerCase(),
+            metadata: { orderId: checkout.orderId, source: "VIP" },
+          },
+        },
+        livemode: false,
+        pending_webhooks: 1,
+        request: null,
+        type: "payment_intent.succeeded",
+      });
+      await service.processStripeWebhook(Buffer.from(payload), signEvent(payload));
+      const order = mockRows.get(`vip_orders/${checkout.orderId}`);
+      expect(order?.status).toBe("ACCEPTED");
+      expect(order?.payment.status).toBe("PAID");
+      expect(order?.timestamps?.cancelledAt ?? null).toBeNull();
+      expect(mockRefundCreate).not.toHaveBeenCalled();
+      const reservation = [...mockRows.entries()].find(([path, row]) =>
+        path.startsWith("vip_reservations/") && row.orderId === checkout.orderId,
+      )?.[1];
+      expect(reservation).toMatchObject({
+        status: "CONFIRMED",
+        inventoryDeferred: true,
+        inventoryApplied: false,
+      });
+    });
   });
 });

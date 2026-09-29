@@ -20,6 +20,7 @@ import {
 } from "../../config/vip.config";
 import type { VipAbandonCheckoutInput, VipCheckoutInput } from "../../middleware/validators/vip.validator";
 import {
+  isVipPreorder,
   normalizeVipFloor,
   VipOrder,
   VipOrderItemSnapshot,
@@ -30,13 +31,40 @@ import {
 } from "../../models/vip.model";
 import { ApiError } from "../../utils/api-error";
 import { normalizeRecordImageUrls } from "../storage.service";
-import { sendVipOrderDeliveredEmail, sendVipOrderPaidEmail } from "./vip-email.service";
+import {
+  sendVipOrderDeliveredEmail,
+  sendVipOrderPaidEmail,
+  sendVipPreorderOnTheWayEmail,
+} from "./vip-email.service";
 import {
   assertVipOrderTransition,
   isVipTerminalStatus,
 } from "./vip-state-machine.service";
-import { releaseVipStock, reserveVipStock } from "./vip-inventory.service";
+import { releaseVipStock, reserveVipStock, restoreAppliedVipStock } from "./vip-inventory.service";
+import { buildInventarioId } from "../inventario.service";
 import { ramaFromInventario } from "../asignacion-caja.service";
+import { getJornadaActiva } from "../jornada.service";
+import {
+  applyDeferredVipInventory,
+  preorderLinePrice,
+  vipReservationDecrementedStock,
+  vipSaleDocId,
+} from "./vip-preorder-inventory.service";
+import {
+  getPreorderSettingsStatus,
+  getPublicPreorderFlags,
+  preorderSlotRef,
+  resolvePreorderSelection,
+  setPreorderEnabled,
+  type ResolvedPreorderSelection,
+} from "./vip-preorder.service";
+import {
+  formatGuideCode,
+  generateGuideCode,
+  normalizeGuideCode,
+  serializePreorderInfo,
+  stadiumLocalToMillis,
+} from "./vip-preorder.utils";
 
 type DocData = FirebaseFirestore.DocumentData;
 type Actor = { actorId: string | null; actorRole: string };
@@ -54,6 +82,7 @@ type ResolvedStockDraw = {
   concessionId: string;
   productId: string;
   quantity: number;
+  deferred: boolean;
 };
 
 type ResolvedCheckout = {
@@ -128,8 +157,11 @@ const serviceConfigRef = (fecha: string) => col(COLLECTIONS.VIP_SERVICE_CONFIGS)
 const orderServiceRef = (order: Pick<VipOrder, "fecha" | "jornadaId">) =>
   serviceConfigRef(order.fecha || order.jornadaId);
 
-const getServiceContext = async (): Promise<ServiceContext> => {
-  const fecha = getVipBusinessDate();
+const loadResolvedService = async (fecha = getVipBusinessDate()): Promise<{
+  fecha: string;
+  serviceRef: FirebaseFirestore.DocumentReference;
+  service: DocData;
+}> => {
   const serviceRef = serviceConfigRef(fecha);
   const [dateDoc, defaultDoc] = await Promise.all([
     serviceRef.get(),
@@ -140,13 +172,91 @@ const getServiceContext = async (): Promise<ServiceContext> => {
     : defaultDoc.exists
       ? defaultDoc.data() || {}
       : { enabled: true, acceptingOrders: true };
-  assertVipServiceOpen(service);
+  return { fecha, serviceRef, service };
+};
+
+const getServiceContext = async (): Promise<ServiceContext> => {
+  const resolved = await loadResolvedService();
+  // El interruptor de Central (venta al público) cierra la entrega inmediata
+  // aunque sea día de partido. El día de partido es una condición adicional.
+  if (!isAcceptingPublicOrders(resolved.service) || resolved.service.enabled === false) {
+    assertVipServiceOpen(resolved.service);
+  }
+  if (!(await isVaronilMatchDay(resolved.fecha))) {
+    throw new ApiError(
+      409,
+      "La entrega inmediata solo está disponible el día del partido.",
+      true,
+      "VIP_NOT_MATCH_DAY",
+    );
+  }
+  assertVipServiceOpen(resolved.service);
   return {
-    fecha,
-    serviceConfigId: fecha,
-    serviceRef,
-    service,
+    fecha: resolved.fecha,
+    serviceConfigId: resolved.fecha,
+    serviceRef: resolved.serviceRef,
+    service: resolved.service,
   };
+};
+
+/**
+ * Preventa: no depende de `acceptingOrders` ni del horario en vivo (se compra antes
+ * del partido); solo respeta el apagado total del servicio para la fecha del partido.
+ */
+const getPreorderServiceContext = async (matchDate: string): Promise<ServiceContext> => {
+  const resolved = await loadResolvedService(matchDate);
+  if (resolved.service.enabled === false) {
+    throw new ApiError(409, "El servicio a palcos no estará disponible para ese partido.", true, "VIP_SERVICE_CLOSED");
+  }
+  return {
+    fecha: resolved.fecha,
+    serviceConfigId: resolved.fecha,
+    serviceRef: resolved.serviceRef,
+    service: resolved.service,
+  };
+};
+
+/** Preventas consumen cupo de su ventana; pedidos inmediatos, el cupo operativo del día. */
+const orderCapacityTarget = (order: VipOrder): {
+  ref: FirebaseFirestore.DocumentReference;
+  field: "count" | "activeOrderCount";
+} => (isVipPreorder(order) && order.preorder.slotId
+  ? { ref: preorderSlotRef(order.preorder.slotId), field: "count" }
+  : { ref: orderServiceRef(order), field: "activeOrderCount" });
+
+const decrementedCapacity = (data: DocData, field: "count" | "activeOrderCount") =>
+  Math.max(0, Number(data[field] || 0) - 1);
+
+const isAcceptingPublicOrders = (data: DocData): boolean => data.acceptingOrders !== false;
+
+const businessDateVariants = (isoDate: string): string[] => {
+  const match = isoDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return [isoDate];
+  return [isoDate, `${match[3]}/${match[2]}/${match[1]}`];
+};
+
+const isActiveVaronilJornada = (row: { activo?: boolean; rama?: unknown; fecha?: unknown } | null | undefined): boolean =>
+  Boolean(row)
+  && row?.activo === true
+  && String(row?.rama || "varonil").toLowerCase() !== "femenil";
+
+/** Hoy es día de partido varonil si la jornada activa o un inventario de esa fecha cae en el día de negocio. */
+const isVaronilMatchDay = async (businessDate = getVipBusinessDate()): Promise<boolean> => {
+  try {
+    const activas = await getJornadaActiva();
+    const scheduledToday = Object.values(activas || {}).some((row) =>
+      isActiveVaronilJornada(row) && toIsoBusinessDate(row?.fecha) === businessDate);
+    if (scheduledToday) return true;
+  } catch (error) {
+    console.warn("vip_match_day_jornada_unavailable", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+  const dated = await Promise.all(businessDateVariants(businessDate).map(async (fecha) => {
+    const snap = await col(COLLECTIONS.INVENTARIOS).where("jornada_fecha", "==", fecha).limit(20).get();
+    return snap.docs.some((doc) => ramaFromInventario(doc.data(), doc.id) === "varonil");
+  }));
+  return dated.some(Boolean);
 };
 
 type StockSource = {
@@ -196,13 +306,6 @@ const listActiveSucursalesForConcession = async (
     .filter((doc) => doc.data()?.activo !== false && String(doc.data()?.concesion_id || "") === concessionId)
     .map((doc) => ({ id: doc.id, data: doc.data() || {} }));
   return { config, sucursales };
-};
-
-const vipSaleDocId = (orderId: string, fulfillment: VipOrder["fulfillments"][number], siblings: VipOrder["fulfillments"]): string => {
-  const sameConcession = siblings.filter((row) => row.concessionId === fulfillment.concessionId);
-  return sameConcession.length > 1
-    ? `vip_${orderId}_${fulfillment.concessionId}_${fulfillment.sucursalId}`
-    : `vip_${orderId}_${fulfillment.concessionId}`;
 };
 
 const loadOptionalProductConfig = async (productId: string, concessionId: string): Promise<DocData> => {
@@ -257,20 +360,18 @@ const pickPreferredOpenInventory = (
 
   if (!varonilOpen.length) return null;
 
-  // Preferir inventario cuya jornada_fecha coincide con el día calendario,
-  // pero si no hay (el inventario del partido se abre días antes),
-  // usar cualquier inventario varonil activo. `activo` es el control real.
+  // La entrega inmediata solo descuenta el inventario del partido de hoy.
+  // Un header abierto de otra fecha pertenece a la preventa de esa jornada.
   const sameDate = varonilOpen.filter(
     (doc) => toIsoBusinessDate(doc.data()?.jornada_fecha) === businessDate,
   );
 
-  return pickNewestInventory(sameDate.length ? sameDate : varonilOpen);
+  return pickNewestInventory(sameDate);
 };
 
 /**
- * Inventario POS de la sucursal sin depender de RTDB `jornada_activa`.
- * Solo headers abiertos (`activo=true`). `jornada_fecha` es la fecha del partido,
- * no el día calendario: al cambiar de jornada el POS cierra el header anterior.
+ * Inventario POS abierto de la sucursal cuya `jornada_fecha` es el día de negocio.
+ * Un header de otro partido no habilita la entrega inmediata.
  */
 const findInventoryForSucursal = async (
   sucursalId: string,
@@ -438,14 +539,73 @@ const mergeDraws = (draws: ResolvedStockDraw[]): ResolvedStockDraw[] => {
   for (const draw of draws) {
     const key = `${draw.inventoryId}:${draw.productId}`;
     const existing = merged.get(key);
-    if (existing) existing.quantity += draw.quantity;
-    else merged.set(key, { ...draw });
+    if (existing) {
+      existing.quantity += draw.quantity;
+      existing.deferred = existing.deferred || draw.deferred;
+    } else merged.set(key, { ...draw });
   }
   return [...merged.values()];
 };
 
-const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckout> => {
-  const context = await getServiceContext();
+/**
+ * Preventa siempre apunta al inventario de su partido.
+ * Si ese header no cubre la cantidad, el draw queda diferido y no toca otro inventario.
+ */
+const pickPreorderStock = async (
+  concessionId: string,
+  productId: string,
+  draws: Array<{ productId: string; quantity: number }>,
+  preorder: ResolvedPreorderSelection,
+): Promise<{
+  sucursalId: string;
+  inventoryId: string;
+  productData?: DocData;
+  deferred: boolean;
+}> => {
+  const { config, sucursales } = await listActiveSucursalesForConcession(concessionId);
+  if (!sucursales.length) {
+    throw new ApiError(409, "La concesión no tiene sucursal activa para preparar el pedido.", true, "VIP_PRODUCT_DISABLED");
+  }
+  const preferredId = preferredSucursalIdFrom(config, sucursales);
+  const sucursal = sucursales.find((row) => row.id === preferredId) ?? sucursales[0];
+  const inventoryId = buildInventarioId(
+    preorder.info.matchDate,
+    preorder.info.jornadaNumero,
+    sucursal.id,
+    "varonil",
+  );
+  const header = await col(COLLECTIONS.INVENTARIOS).doc(inventoryId).get();
+  const open = header.exists && isOpenInventoryHeader(header.data());
+  const productSnap = header.exists
+    ? await header.ref.collection(SUBCOLLECTIONS.PRODUCTOS).doc(productId).get()
+    : null;
+  let covers = open;
+  if (covers && productSnap) {
+    for (const draw of draws) {
+      const line = draw.productId === productId
+        ? productSnap
+        : await header.ref.collection(SUBCOLLECTIONS.PRODUCTOS).doc(draw.productId).get();
+      if (!line.exists || inventoryQuantity(line.data()) < draw.quantity) {
+        covers = false;
+        break;
+      }
+    }
+  } else {
+    covers = false;
+  }
+  return {
+    sucursalId: sucursal.id,
+    inventoryId,
+    productData: productSnap?.exists ? productSnap.data() : undefined,
+    deferred: !covers,
+  };
+};
+
+const resolveCheckout = async (
+  input: VipCheckoutInput,
+  context: ServiceContext,
+  preorder: ResolvedPreorderSelection | null,
+): Promise<ResolvedCheckout> => {
   const zona = input.delivery.zona.trim();
   const palco = input.delivery.palco.trim();
   const nivel = normalizeVipFloor(zona, String(input.delivery.nivel || ""));
@@ -483,15 +643,26 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
         productId: String(addOn.inventoryProductId),
         quantity: (addOn.inventoryQuantity || 1) * requested.quantity,
       }));
-    const source = await pickStockSource(concessionId, requested.productId, [
+    const requestedDraws = [
       { productId: requested.productId, quantity: requested.quantity },
       ...addOnDraws,
-    ]);
-    const sucursalId = source.sucursalId;
-    const inventoryId = source.inventory.id;
-    const inventoryProductData = source.productData;
+    ];
+    const preorderSource = preorder
+      ? await pickPreorderStock(concessionId, requested.productId, requestedDraws, preorder)
+      : null;
+    const source = preorderSource
+      ? null
+      : await pickStockSource(concessionId, requested.productId, requestedDraws);
+    // `productData` es opcional en preventa diferida (aún no hay línea). `??` no
+    // sirve: undefined caería en `source`, que en preventa es null.
+    const sucursalId = preorderSource ? preorderSource.sucursalId : source!.sucursalId;
+    const inventoryId = preorderSource ? preorderSource.inventoryId : source!.inventory.id;
+    const inventoryProductData = preorderSource ? preorderSource.productData : source!.productData;
+    const deferred = preorderSource?.deferred ?? false;
 
-    const configuredPrice = Number(inventoryProductData?.precio_jornada ?? product.precio);
+    const configuredPrice = preorderSource
+      ? preorderLinePrice(inventoryProductData?.precio_jornada, product.precio)
+      : Number(inventoryProductData?.precio_jornada ?? product.precio);
     if (!Number.isFinite(configuredPrice) || configuredPrice < 0) {
       throw new ApiError(500, "El producto tiene un precio inválido.", false, "VIP_INVALID_CONFIG");
     }
@@ -516,7 +687,14 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
       lineTotalMinor,
     };
     items.push(snapshot);
-    draws.push({ inventoryId, sucursalId, concessionId, productId: requested.productId, quantity: requested.quantity });
+    draws.push({
+      inventoryId,
+      sucursalId,
+      concessionId,
+      productId: requested.productId,
+      quantity: requested.quantity,
+      deferred,
+    });
     for (const addOn of addOnDraws) {
       draws.push({
         inventoryId,
@@ -524,6 +702,7 @@ const resolveCheckout = async (input: VipCheckoutInput): Promise<ResolvedCheckou
         concessionId,
         productId: addOn.productId,
         quantity: addOn.quantity,
+        deferred,
       });
     }
 
@@ -596,13 +775,22 @@ const createStripeSession = async (
 ) => {
   const stripe = getVipStripeClient();
   const expiresAt = Math.floor(order.reservationExpiresAt.toMillis() / 1000);
+  const preorder = isVipPreorder(order) ? order.preorder : null;
   const metadata = {
     orderId: order.id,
     orderNumber: order.orderNumber,
     source: "VIP",
     fecha: order.fecha,
     jornadaId: order.jornadaId,
+    orderType: preorder ? "PREORDER" : "IMMEDIATE",
+    ...(preorder ? { matchId: preorder.matchId, deliveryWindow: preorder.windowLabel } : {}),
   };
+  const productName = preorder
+    ? `Preventa Palcos ${order.orderNumber}`
+    : `Pedido Palcos ${order.orderNumber}`;
+  const productDescription = preorder
+    ? `Partido ${preorder.jornadaNumero} · ${preorder.matchLabel} · Entrega ${preorder.windowLabel}`.slice(0, 250)
+    : "Entrega a palco · Club León";
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
     customer_email: order.customer.email,
@@ -616,8 +804,8 @@ const createStripeSession = async (
         currency: order.currency,
         unit_amount: order.totalMinor,
         product_data: {
-          name: `Pedido Palcos ${order.orderNumber}`,
-          description: "Entrega a palco · Club León",
+          name: productName,
+          description: productDescription,
           metadata,
         },
       },
@@ -668,10 +856,17 @@ export const createCheckout = async (
       };
     }
   }
-  const resolved = await resolveCheckout(input);
+  const preorder: ResolvedPreorderSelection | null = input.preorder
+    ? await resolvePreorderSelection(input.preorder, input.delivery.zona)
+    : null;
+  const context = preorder
+    ? await getPreorderServiceContext(preorder.matchDate)
+    : await getServiceContext();
+  const resolved = await resolveCheckout(input, context, preorder);
   const orderRef = orderCol().doc();
   const currency = getVipCurrency();
   const expiresAt = Timestamp.fromMillis(Date.now() + getVipReservationTtlMinutes() * 60_000);
+  const guideCandidates = [generateGuideCode(), generateGuideCode(), generateGuideCode()];
   let selectedOrderId = orderRef.id;
 
   await firestorePos.runTransaction(async (tx) => {
@@ -683,21 +878,41 @@ export const createCheckout = async (
       selectedOrderId = String(idemDoc.data()?.orderId);
       return;
     }
-    const serviceDoc = await tx.get(resolved.context.serviceRef);
-    const latestService = serviceDoc.exists
+    const serviceDoc = preorder ? null : await tx.get(resolved.context.serviceRef);
+    const latestService = serviceDoc?.exists
       ? serviceDoc.data() || {}
       : { enabled: true, acceptingOrders: true, activeOrderCount: 0 };
-    assertVipServiceOpen(latestService);
-    assertVipCapacity(latestService);
+    let slotDoc: FirebaseFirestore.DocumentSnapshot | null = null;
+    if (preorder) {
+      slotDoc = await tx.get(preorder.slotRef);
+      const booked = Math.max(0, Number(slotDoc.data()?.count || 0));
+      if (booked >= preorder.capacity) {
+        throw new ApiError(409, "Ese horario ya se llenó. Elige otra ventana de entrega.", true, "VIP_PREORDER_WINDOW_FULL");
+      }
+    } else {
+      assertVipServiceOpen(latestService);
+      assertVipCapacity(latestService);
+    }
+    let guideCode: string | null = null;
+    for (const candidate of guideCandidates) {
+      const guideDoc = await tx.get(col(COLLECTIONS.VIP_ORDER_GUIDES).doc(candidate));
+      if (!guideDoc.exists) {
+        guideCode = candidate;
+        break;
+      }
+    }
+    if (!guideCode) {
+      throw new ApiError(503, "No fue posible generar la guía del pedido. Intenta de nuevo.", true, "VIP_GUIDE_UNAVAILABLE");
+    }
 
     const uniqueInventoryIds = [...new Set(resolved.draws.map((draw) => draw.inventoryId))];
     const inventoryHeaders = new Map<string, FirebaseFirestore.DocumentSnapshot>();
     for (const inventoryId of uniqueInventoryIds) {
       const header = await tx.get(col(COLLECTIONS.INVENTARIOS).doc(inventoryId));
-      if (!header.exists || !isOpenInventoryHeader(header.data())) {
+      if (!preorder && (!header.exists || !isOpenInventoryHeader(header.data()))) {
         throw new ApiError(
           409,
-          "El inventario de la jornada activa ya no está disponible.",
+          "El inventario del partido ya no está disponible.",
           true,
           "VIP_OUT_OF_STOCK",
         );
@@ -710,23 +925,36 @@ export const createCheckout = async (
         .collection(SUBCOLLECTIONS.PRODUCTOS).doc(draw.productId));
     const stockDocs: FirebaseFirestore.DocumentSnapshot[] = [];
     for (const ref of stockRefs) stockDocs.push(await tx.get(ref));
-    for (const [index, draw] of resolved.draws.entries()) {
+    const deferredFlags = resolved.draws.map((draw, index) => {
+      const header = inventoryHeaders.get(draw.inventoryId);
       const stockDoc = stockDocs[index];
-      if (!stockDoc.exists) {
-        throw new ApiError(409, "Uno o más productos no tienen inventario.", true, "VIP_OUT_OF_STOCK");
+      const open = Boolean(header?.exists && isOpenInventoryHeader(header.data()));
+      if (!preorder) {
+        if (!stockDoc.exists) {
+          throw new ApiError(409, "Uno o más productos no tienen inventario.", true, "VIP_OUT_OF_STOCK");
+        }
+        const current = Number(stockDoc.data()?.cantidad_final ?? stockDoc.data()?.cantidad_inicial ?? 0);
+        reserveVipStock(current, draw.quantity);
+        return false;
       }
+      if (!open || !stockDoc.exists) return true;
       const current = Number(stockDoc.data()?.cantidad_final ?? stockDoc.data()?.cantidad_inicial ?? 0);
-      reserveVipStock(current, draw.quantity);
-    }
+      return current < draw.quantity;
+    });
 
     const trackingToken = buildTrackingToken(orderRef.id);
     const now = Timestamp.now();
+    const orderPrefix = preorder ? "PREV" : "PALCO";
     const order: VipOrder = {
       id: orderRef.id,
-      orderNumber: `PALCO-${resolved.context.fecha.replace(/-/g, "")}-${orderRef.id.slice(0, 6).toUpperCase()}`,
+      orderNumber: `${orderPrefix}-${resolved.context.fecha.replace(/-/g, "")}-${orderRef.id.slice(0, 6).toUpperCase()}`,
       fecha: resolved.context.fecha,
       jornadaId: resolved.context.fecha,
-      matchId: resolved.context.fecha,
+      matchId: preorder ? preorder.info.matchId : resolved.context.fecha,
+      orderType: preorder ? "PREORDER" : "IMMEDIATE",
+      preorder: preorder ? preorder.info : null,
+      ...(preorder ? { scheduledFor: preorder.info.windowStartAt } : {}),
+      guideCode,
       customer: {
         name: input.customer.name,
         email: input.customer.email.toLowerCase(),
@@ -778,6 +1006,10 @@ export const createCheckout = async (
       updatedAt: now,
     };
     tx.create(orderRef, order);
+    tx.create(col(COLLECTIONS.VIP_ORDER_GUIDES).doc(guideCode), {
+      orderId: orderRef.id,
+      createdAt: now,
+    });
     tx.create(idemRef, {
       operation: "VIP_CHECKOUT",
       idempotencyKeyHash: sha256(idempotencyKey),
@@ -786,60 +1018,91 @@ export const createCheckout = async (
       createdAt: now,
       expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60_000),
     });
-    tx.set(resolved.context.serviceRef, {
-      fecha: resolved.context.fecha,
-      enabled: latestService.enabled !== false,
-      acceptingOrders: latestService.acceptingOrders !== false,
-      activeOrderCount: FieldValue.increment(1),
-      updatedAt: FieldValue.serverTimestamp(),
-      ...(serviceDoc.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
-    }, { merge: true });
+    if (preorder) {
+      tx.set(preorder.slotRef, {
+        matchId: preorder.info.matchId,
+        matchDate: preorder.info.matchDate,
+        zona: preorder.zona,
+        windowStart: preorder.info.windowStart,
+        windowEnd: preorder.info.windowEnd,
+        windowStartAt: preorder.info.windowStartAt,
+        capacity: preorder.capacity,
+        count: FieldValue.increment(1),
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(slotDoc?.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      }, { merge: true });
+    } else {
+      tx.set(resolved.context.serviceRef, {
+        fecha: resolved.context.fecha,
+        enabled: latestService.enabled !== false,
+        acceptingOrders: latestService.acceptingOrders !== false,
+        activeOrderCount: FieldValue.increment(1),
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(serviceDoc?.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      }, { merge: true });
+    }
     for (const [index, draw] of resolved.draws.entries()) {
+      const deferred = deferredFlags[index];
       const stockRef = stockRefs[index];
-      const current = Number(stockDocs[index].data()?.cantidad_final ?? stockDocs[index].data()?.cantidad_inicial ?? 0);
-      const next = reserveVipStock(current, draw.quantity);
-      tx.update(stockRef, { cantidad_final: next, updatedAt: FieldValue.serverTimestamp() });
+      const stockDoc = stockDocs[index];
+      const current = stockDoc.exists
+        ? Number(stockDoc.data()?.cantidad_final ?? stockDoc.data()?.cantidad_inicial ?? 0)
+        : 0;
+      if (!deferred) {
+        const next = reserveVipStock(current, draw.quantity);
+        tx.update(stockRef, { cantidad_final: next, updatedAt: FieldValue.serverTimestamp() });
+        tx.create(
+          col(COLLECTIONS.INVENTARIOS).doc(draw.inventoryId)
+            .collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(),
+          {
+            tipo: "RESERVA_VIP",
+            producto_id: draw.productId,
+            cantidad: -draw.quantity,
+            cantidad_anterior: current,
+            cantidad_nueva: next,
+            sucursal_id: draw.sucursalId,
+            vipOrderId: orderRef.id,
+            motivo: "Reserva temporal checkout palcos",
+            createdAt: FieldValue.serverTimestamp(),
+          },
+        );
+      }
       const reservationId = sha256(`${orderRef.id}:${draw.inventoryId}:${draw.productId}`);
       const inventoryHeader = inventoryHeaders.get(draw.inventoryId)?.data() || {};
-      const jornadaFecha = toIsoBusinessDate(inventoryHeader.jornada_fecha) || resolved.context.fecha;
+      const jornadaFecha = preorder?.info.matchDate
+        || toIsoBusinessDate(inventoryHeader.jornada_fecha)
+        || resolved.context.fecha;
       tx.create(col(COLLECTIONS.VIP_RESERVATIONS).doc(reservationId), {
         id: reservationId,
         orderId: orderRef.id,
         fecha: resolved.context.fecha,
         jornadaId: resolved.context.fecha,
         jornadaFecha,
-        jornadaNumero: Number(inventoryHeader.jornada_numero || 0),
+        matchDate: preorder?.info.matchDate || jornadaFecha,
+        jornadaNumero: preorder
+          ? preorder.info.jornadaNumero
+          : Number(inventoryHeader.jornada_numero || 0),
         inventoryId: draw.inventoryId,
         sucursalId: draw.sucursalId,
         concessionId: draw.concessionId,
         productId: draw.productId,
         quantity: draw.quantity,
         status: VipReservationStatus.ACTIVE,
+        inventoryDeferred: deferred,
+        inventoryApplied: !deferred,
         expiresAt,
         createdAt: now,
         updatedAt: now,
       });
-      tx.create(
-        col(COLLECTIONS.INVENTARIOS).doc(draw.inventoryId)
-          .collection(SUBCOLLECTIONS.MOVIMIENTOS).doc(),
-        {
-          tipo: "RESERVA_VIP",
-          producto_id: draw.productId,
-          cantidad: -draw.quantity,
-          cantidad_anterior: current,
-          cantidad_nueva: next,
-          sucursal_id: draw.sucursalId,
-          vipOrderId: orderRef.id,
-          motivo: "Reserva temporal checkout palcos",
-          createdAt: FieldValue.serverTimestamp(),
-        },
-      );
     }
     tx.create(orderEventRef(orderRef.id), eventPayload(
       "ORDER_CREATED",
       null,
       VipOrderStatus.PENDING_PAYMENT,
       { actorId: null, actorRole: "GUEST" },
+      preorder
+        ? { orderType: "PREORDER", matchId: preorder.info.matchId, deliveryWindow: preorder.info.windowLabel }
+        : { orderType: "IMMEDIATE" },
     ));
     tx.create(orderEventRef(orderRef.id), eventPayload(
       "PAYMENT_STARTED",
@@ -940,7 +1203,8 @@ const releaseReservations = async (
     for (const reservation of activeReservations) {
       const data = reservation.data() || {};
       const inventoryId = String(data.inventoryId || "");
-      const restoreStock = isOpenInventoryHeader(inventoryHeaders.get(inventoryId)?.data());
+      const restoreStock = vipReservationDecrementedStock(data) &&
+        isOpenInventoryHeader(inventoryHeaders.get(inventoryId)?.data());
       const stock = restoreStock
         ? await tx.get(
           col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
@@ -949,8 +1213,8 @@ const releaseReservations = async (
         : null;
       activeDocs.push({ doc: reservation, stock, restoreStock });
     }
-    const serviceRef = orderServiceRef(order);
-    const serviceDoc = order.capacityReleased ? null : await tx.get(serviceRef);
+    const capacity = orderCapacityTarget(order);
+    const capacityDoc = order.capacityReleased ? null : await tx.get(capacity.ref);
     for (const pair of activeDocs) {
       const data = pair.doc.data() || {};
       const quantity = Number(data.quantity || 0);
@@ -982,9 +1246,9 @@ const releaseReservations = async (
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
-    if (!order.capacityReleased && serviceDoc?.exists) {
-      tx.update(serviceRef, {
-        activeOrderCount: Math.max(0, activeOrderCount(serviceDoc.data() || {}) - 1),
+    if (!order.capacityReleased && capacityDoc?.exists) {
+      tx.update(capacity.ref, {
+        [capacity.field]: decrementedCapacity(capacityDoc.data() || {}, capacity.field),
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
@@ -1065,12 +1329,24 @@ const finalizePaidOrder = async (
     }
     const now = Timestamp.now();
     const usesInventory = order.items.some((item) => Boolean(item.inventoryId));
-    const reservationUnavailable = usesInventory && (
+    const reservationIsHeld = (status: unknown) =>
+      status === VipReservationStatus.ACTIVE || status === VipReservationStatus.CONFIRMED;
+    // Preventa diferida: el inventario del partido puede no existir todavía.
+    // Mientras la reserva siga activa, el pago no se cancela ni se reembolsa.
+    const deferredPreorderHold = isVipPreorder(order) &&
+      reservationDocs.length > 0 &&
+      reservationDocs.every((reservation) => {
+        const data = reservation.data() || {};
+        return data.inventoryDeferred === true && reservationIsHeld(data.status);
+      });
+    const reservationUnavailable = usesInventory && !deferredPreorderHold && (
       reservationDocs.length === 0 ||
-      reservationDocs.some((reservation) =>
-        ![VipReservationStatus.ACTIVE, VipReservationStatus.CONFIRMED].includes(reservation.data()?.status)) ||
-      reservationDocs.some((reservation) =>
-        !isOpenInventoryHeader(inventoryHeaders.get(String(reservation.data()?.inventoryId || ""))?.data()))
+      reservationDocs.some((reservation) => !reservationIsHeld(reservation.data()?.status)) ||
+      reservationDocs.some((reservation) => {
+        const data = reservation.data() || {};
+        if (data.inventoryDeferred === true) return false;
+        return !isOpenInventoryHeader(inventoryHeaders.get(String(data.inventoryId || ""))?.data());
+      })
     );
     if (reservationUnavailable) {
       tx.update(orderRef, {
@@ -1102,6 +1378,7 @@ const finalizePaidOrder = async (
       if (reservation.data()?.status === VipReservationStatus.ACTIVE) {
         tx.update(reservation.ref, { status: VipReservationStatus.CONFIRMED, updatedAt: now });
         const data = reservation.data() || {};
+        if (data.inventoryDeferred === true) continue;
         const quantity = Number(data.quantity || 0);
         const inventoryId = String(data.inventoryId || "");
         const productId = String(data.productId || "");
@@ -1129,13 +1406,28 @@ const finalizePaidOrder = async (
         );
       }
     }
+    const preorder = isVipPreorder(order) ? order.preorder : null;
+    const paidStatus = preorder ? VipOrderStatus.ACCEPTED : VipOrderStatus.RECEIVED;
+    const fulfillmentReady = (fulfillment: VipOrder["fulfillments"][number]) => {
+      const related = reservationDocs.filter((reservation) => {
+        const data = reservation.data() || {};
+        return String(data.inventoryId || "") === fulfillment.inventoryId &&
+          String(data.concessionId || "") === fulfillment.concessionId &&
+          data.status !== VipReservationStatus.RELEASED;
+      });
+      return related.length > 0 && related.every((reservation) => reservation.data()?.inventoryDeferred !== true);
+    };
+    const salesReady = order.fulfillments.every(fulfillmentReady);
     for (const fulfillment of order.fulfillments) {
+      if (!fulfillmentReady(fulfillment)) continue;
       const saleId = vipSaleDocId(order.id, fulfillment, order.fulfillments);
       const saleRef = col(COLLECTIONS.COMPROBANTES_VENTA).doc(saleId);
       tx.set(saleRef, {
         ventaId: saleId,
         vipOrderId: order.id,
         vipOrderNumber: order.orderNumber,
+        vipOrderType: preorder ? "PREORDER" : "IMMEDIATE",
+        ...(preorder ? { vipMatchId: preorder.matchId, vipScheduledFor: preorder.windowStartAt } : {}),
         concesionId: fulfillment.concessionId,
         sucursalId: fulfillment.sucursalId,
         inventarioId: fulfillment.inventoryId,
@@ -1177,15 +1469,16 @@ const finalizePaidOrder = async (
       }
     }
     tx.update(orderRef, {
-      status: VipOrderStatus.RECEIVED,
+      status: paidStatus,
       "payment.status": VipPaymentStatus.PAID,
       ...(paymentIntentId ? { "payment.paymentIntentId": paymentIntentId } : {}),
       ...(checkoutSessionId ? { "payment.checkoutSessionId": checkoutSessionId } : {}),
-      inventoryConfirmed: true,
-      salesRecorded: true,
-      fulfillments: order.fulfillments.map((row) => ({ ...row, status: VipOrderStatus.RECEIVED })),
+      inventoryConfirmed: salesReady,
+      salesRecorded: salesReady,
+      fulfillments: order.fulfillments.map((row) => ({ ...row, status: paidStatus })),
       "timestamps.paidAt": now,
       "timestamps.receivedAt": now,
+      ...(preorder ? { "timestamps.acceptedAt": now, "timestamps.scheduledAt": now } : {}),
       updatedAt: now,
     });
     tx.create(orderEventRef(orderId), eventPayload(
@@ -1201,6 +1494,16 @@ const finalizePaidOrder = async (
       VipOrderStatus.RECEIVED,
       { actorId: eventId, actorRole: "STRIPE" },
     ));
+    if (preorder) {
+      // La preventa no entra a la cola de aceptación inmediata de Central.
+      tx.create(orderEventRef(orderId), eventPayload(
+        "PREORDER_SCHEDULED",
+        VipOrderStatus.RECEIVED,
+        VipOrderStatus.ACCEPTED,
+        { actorId: eventId, actorRole: "STRIPE" },
+        { matchId: preorder.matchId, deliveryWindow: preorder.windowLabel },
+      ));
+    }
     return "DONE";
   });
   if (result === "REFUND_REQUIRED") {
@@ -1210,12 +1513,28 @@ const finalizePaidOrder = async (
       { actorId: eventId, actorRole: "STRIPE" },
     );
   } else if (result === "DONE") {
+    const pendingInventories = [...new Set(
+      reservations.docs
+        .filter((doc) => doc.data()?.inventoryDeferred === true && doc.data()?.inventoryApplied !== true)
+        .map((doc) => String(doc.data()?.inventoryId || ""))
+        .filter(Boolean),
+    )];
+    for (const inventoryId of pendingInventories) {
+      try {
+        await applyDeferredVipInventory(inventoryId);
+      } catch (error) {
+        console.error("vip_deferred_inventory_settle_failed", {
+          orderId,
+          inventarioId: inventoryId,
+          message: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
     console.info("vip_payment_finalized", {
       orderId,
       paymentIntentId,
       stripeEventId: eventId,
       action: "payment_confirmed",
-      status: VipOrderStatus.RECEIVED,
     });
     try {
       const paidOrder = await loadOrder(orderId);
@@ -1375,12 +1694,17 @@ export const confirmCheckoutSession = async (sessionId: string) => {
     );
   }
   const latest = await loadOrder(orderId);
+  const paid = latest.payment.status === VipPaymentStatus.PAID;
   return {
     orderId: latest.id,
     orderNumber: latest.orderNumber,
     status: latest.status,
     paymentStatus: latest.payment.status,
-    paid: latest.payment.status === VipPaymentStatus.PAID,
+    paid,
+    orderType: isVipPreorder(latest) ? "PREORDER" : "IMMEDIATE",
+    preorder: serializePreorderInfo(latest.preorder),
+    // La guía solo se revela cuando el pago está confirmado.
+    guideCode: paid ? formatGuideCode(latest.guideCode) : null,
   };
 };
 
@@ -1509,6 +1833,7 @@ const toCatalogProduct = (
   concessionId: string,
   vip: DocData,
   inventoryProductData: DocData | undefined,
+  hasOpenJornada: boolean,
 ): DocData | null => {
   const product = productDoc.data() || {};
   if (product.activo === false) return null;
@@ -1522,6 +1847,7 @@ const toCatalogProduct = (
   const availableQuantity = inventoryProductData
     ? Number(inventoryProductData.cantidad_final ?? inventoryProductData.cantidad_inicial ?? 0)
     : 0;
+  const inStock = Number.isFinite(availableQuantity) && availableQuantity > 0;
   const normalizedProductImages = normalizeRecordImageUrls({
     id: productDoc.id,
     imagenes: Array.isArray(product.imagenes) ? product.imagenes : [],
@@ -1534,7 +1860,8 @@ const toCatalogProduct = (
     images: normalizedProductImages,
     price: minorToMoney(moneyToMinor(price)),
     currency: getVipCurrency(),
-    available: Number.isFinite(availableQuantity) && availableQuantity > 0,
+    available: inStock,
+    awaitingInventory: hasOpenJornada && !inventoryProductData,
     options: resolveConfiguredSelection(
       Array.isArray(vip.options) ? vip.options.filter((row: DocData) => row?.active !== false).map((row: DocData) => String(row.id)) : [],
       vip.options,
@@ -1622,6 +1949,7 @@ export const listCatalog = async () => {
     );
     if (!concessionSucursales.length) continue;
     const preferredId = preferredSucursalIdFrom(configs.get(concessionDoc.id), concessionSucursales);
+    const hasOpenJornada = concessionSucursales.some((row) => inventoryBySucursal.has(row.id));
     const products: DocData[] = [];
     for (const productDoc of productsByConcession.get(concessionDoc.id) || []) {
       const mapped = toCatalogProduct(
@@ -1635,6 +1963,7 @@ export const listCatalog = async () => {
           inventoryBySucursal,
           inventoryProducts,
         ),
+        hasOpenJornada,
       );
       if (mapped) products.push(mapped);
     }
@@ -1684,6 +2013,7 @@ export const getCatalogConcession = async (id: string) => {
     Promise.all(productSnap.docs.map((doc) => col(COLLECTIONS.VIP_PRODUCT_CONFIG).doc(doc.id).get())),
     loadInventoryProductMaps(usedInventories),
   ]);
+  const hasOpenJornada = concessionSucursales.some((row) => inventoryBySucursal.has(row.id));
   const products: DocData[] = [];
   productSnap.docs.forEach((productDoc, index) => {
     const mapped = toCatalogProduct(
@@ -1697,6 +2027,7 @@ export const getCatalogConcession = async (id: string) => {
         inventoryBySucursal,
         inventoryProducts,
       ),
+      hasOpenJornada,
     );
     if (mapped) products.push(mapped);
   });
@@ -1729,12 +2060,17 @@ export const listLocations = async () => {
   return locations;
 };
 
+const maskEmail = (email: string): string => email.replace(/(^.).*(@.*$)/, "$1***$2");
+
 const publicTrackingOrder = (order: VipOrder) => ({
   id: order.id,
   orderNumber: order.orderNumber,
   fecha: order.fecha,
   jornadaId: order.jornadaId,
-  customer: { name: order.customer.name, email: order.customer.email.replace(/(^.).*(@.*$)/, "$1***$2") },
+  orderType: isVipPreorder(order) ? "PREORDER" : "IMMEDIATE",
+  preorder: serializePreorderInfo(order.preorder),
+  guideCode: formatGuideCode(order.guideCode),
+  customer: { name: order.customer.name, email: maskEmail(order.customer.email) },
   delivery: order.delivery,
   items: order.items,
   fulfillments: order.fulfillments,
@@ -1759,6 +2095,95 @@ export const getTracking = async (orderId: string, token: string) => {
     throw new ApiError(404, "Orden no encontrada.", true, "VIP_ORDER_NOT_FOUND");
   }
   return publicTrackingOrder(order);
+};
+
+/** Vista pública por guía: sin ids internos, email, teléfono ni notas del palco. */
+const guideLookupOrder = (order: VipOrder) => ({
+  orderNumber: order.orderNumber,
+  guideCode: formatGuideCode(order.guideCode),
+  orderType: isVipPreorder(order) ? "PREORDER" : "IMMEDIATE",
+  preorder: serializePreorderInfo(order.preorder),
+  status: order.status,
+  paymentStatus: order.payment.status,
+  customer: { name: String(order.customer?.name || "").trim().split(/\s+/)[0] || "Cliente" },
+  delivery: {
+    zona: order.delivery?.zona || "",
+    palco: order.delivery?.palco || "",
+    nivel: order.delivery?.nivel || "",
+  },
+  items: (order.items || []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    quantity: item.quantity,
+    concessionId: item.concessionId,
+    selectedOptions: (item.selectedOptions || []).map((option) => ({ id: option.id, name: option.name })),
+    extras: (item.extras || []).map((extra) => ({ id: extra.id, name: extra.name })),
+    lineTotal: item.lineTotal,
+  })),
+  fulfillments: (order.fulfillments || []).map((row) => ({
+    concessionId: row.concessionId,
+    concessionName: row.concessionName,
+    itemIds: row.itemIds,
+  })),
+  subtotal: order.subtotal,
+  serviceFee: order.serviceFee,
+  total: order.total,
+  currency: order.currency,
+  timestamps: Object.fromEntries(
+    Object.entries(order.timestamps || {}).map(([key, value]) => [key, asIso(value)]),
+  ),
+  createdAt: asIso(order.createdAt),
+  updatedAt: asIso(order.updatedAt),
+});
+
+export const lookupOrderByGuide = async (rawGuide: string) => {
+  const guideCode = normalizeGuideCode(rawGuide);
+  if (!guideCode) {
+    throw new ApiError(400, "La guía debe tener 8 caracteres (ej. 7KQ4-M2XD).", true, "VIP_INVALID_GUIDE");
+  }
+  const guideDoc = await col(COLLECTIONS.VIP_ORDER_GUIDES).doc(guideCode).get();
+  const orderId = String(guideDoc.data()?.orderId || "");
+  if (!guideDoc.exists || !orderId) {
+    throw new ApiError(404, "No encontramos un pedido con esa guía.", true, "VIP_ORDER_NOT_FOUND");
+  }
+  const orderDoc = await orderCol().doc(orderId).get();
+  const order = orderDoc.data() as VipOrder | undefined;
+  if (!orderDoc.exists || !order || order.guideCode !== guideCode) {
+    throw new ApiError(404, "No encontramos un pedido con esa guía.", true, "VIP_ORDER_NOT_FOUND");
+  }
+  return guideLookupOrder(order);
+};
+
+const PREORDER_BOARD_PAYMENT_STATUSES: ReadonlySet<VipPaymentStatus> = new Set([
+  VipPaymentStatus.PAID,
+  VipPaymentStatus.REFUND_PENDING,
+  VipPaymentStatus.PARTIALLY_REFUNDED,
+  VipPaymentStatus.REFUNDED,
+]);
+
+/** Preventas pagadas desde el inicio del día indicado (hora del estadio), por ventana. */
+export const listAdminPreorders = async (filters: {
+  zona: VipStadiumZone;
+  from?: string;
+  concessionId?: string;
+  sucursalId?: string;
+}) => {
+  if (filters.zona !== "Oriente" && filters.zona !== "Poniente") {
+    throw new ApiError(400, "Indica la zona de esta Central (Oriente o Poniente).", true, "VIP_ZONE_REQUIRED");
+  }
+  const fromDate = filters.from || getVipBusinessDate();
+  const fromTs = Timestamp.fromMillis(stadiumLocalToMillis(fromDate, 0));
+  const snap = await orderCol().where("scheduledFor", ">=", fromTs).limit(500).get();
+  const data = snap.docs
+    .map((doc) => doc.data() as VipOrder)
+    .filter((row) => isVipPreorder(row) && row.delivery?.zona === filters.zona)
+    .filter((row) => PREORDER_BOARD_PAYMENT_STATUSES.has(row.payment?.status))
+    .filter((row) => !filters.concessionId || (row.concessionIds || []).includes(filters.concessionId))
+    .filter((row) => !filters.sucursalId || (row.sucursalIds || []).includes(filters.sucursalId))
+    .sort((a, b) =>
+      (asMillis(a.scheduledFor) ?? 0) - (asMillis(b.scheduledFor) ?? 0) ||
+      (asMillis(a.createdAt) ?? 0) - (asMillis(b.createdAt) ?? 0));
+  return { data };
 };
 
 export const listAdminOrders = async (filters: {
@@ -1827,14 +2252,82 @@ export const listAdminOrders = async (filters: {
   }
 };
 
-export const unlockCentralZone = (password: string, zona: VipStadiumZone) => {
+const assertCentralZonePassword = (password: string): void => {
   const expected = getVipCentralZonePassword();
   const received = createHash("sha256").update(String(password || "")).digest();
   const target = createHash("sha256").update(expected).digest();
   if (!timingSafeEqual(received, target)) {
     throw new ApiError(401, "Contraseña incorrecta.", true, "VIP_INVALID_ZONE_PASSWORD");
   }
+};
+
+export const unlockCentralZone = (password: string, zona: VipStadiumZone) => {
+  assertCentralZonePassword(password);
   return { zona };
+};
+
+const safePreorderFlags = async (): Promise<{ enabled: boolean; open: boolean }> => {
+  try {
+    return await getPublicPreorderFlags();
+  } catch (error) {
+    console.warn("vip_preorder_status_unavailable", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
+    return { enabled: false, open: false };
+  }
+};
+
+export const getPublicSalesStatus = async () => {
+  const businessDate = getVipBusinessDate();
+  const [{ service }, preorders, matchDay] = await Promise.all([
+    loadResolvedService(businessDate),
+    safePreorderFlags(),
+    isVaronilMatchDay(businessDate),
+  ]);
+  const acceptingOrders = isAcceptingPublicOrders(service);
+  return {
+    acceptingOrders,
+    matchDay,
+    liveOrdersOpen: matchDay && acceptingOrders && service.enabled !== false,
+    preordersEnabled: preorders.enabled,
+    preordersOpen: preorders.open,
+  };
+};
+
+export const getAdminPreorderSettings = () => getPreorderSettingsStatus();
+
+export const setAdminPreorderSettings = async (
+  password: string,
+  enabled: boolean,
+  actorId: string | null,
+) => {
+  assertCentralZonePassword(password);
+  return setPreorderEnabled(enabled, actorId);
+};
+
+export const setPublicSalesStatus = async (
+  password: string,
+  acceptingOrders: boolean,
+  actorId: string | null,
+) => {
+  assertCentralZonePassword(password);
+  const fecha = getVipBusinessDate();
+  const serviceRef = serviceConfigRef(fecha);
+  const [dateDoc, defaultDoc] = await Promise.all([
+    serviceRef.get(),
+    col(COLLECTIONS.VIP_SERVICE_CONFIGS).doc("default").get(),
+  ]);
+  const inherited = !dateDoc.exists && defaultDoc.exists ? { ...(defaultDoc.data() || {}) } : {};
+  delete inherited.updatedAt;
+  delete inherited.updatedBy;
+  await serviceRef.set({
+    ...inherited,
+    fecha,
+    acceptingOrders,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: actorId,
+  }, { merge: true });
+  return { acceptingOrders };
 };
 
 export const getAdminOrder = loadOrder;
@@ -1850,7 +2343,8 @@ export const transitionOrder = async (
     const doc = await tx.get(ref);
     if (!doc.exists) throw new ApiError(404, "Orden no encontrada.", true, "VIP_ORDER_NOT_FOUND");
     const order = doc.data() as VipOrder;
-    const autoOnTheWay = status === VipOrderStatus.ACCEPTED && order.status === VipOrderStatus.RECEIVED;
+    const preorder = isVipPreorder(order);
+    const autoOnTheWay = !preorder && status === VipOrderStatus.ACCEPTED && order.status === VipOrderStatus.RECEIVED;
     const finalStatus = autoOnTheWay ? VipOrderStatus.ON_THE_WAY : status;
     if (order.status === finalStatus) return order.status;
     assertVipOrderTransition(order.status, status);
@@ -1868,7 +2362,8 @@ export const transitionOrder = async (
     const closesKitchen = isVipTerminalStatus(finalStatus)
       || finalStatus === VipOrderStatus.PREPARING
       || finalStatus === VipOrderStatus.ON_THE_WAY;
-    if (!capacityReleased && closesKitchen) {
+    // El cupo de una preventa es de su ventana de entrega: solo se libera al cancelar/reembolsar.
+    if (!preorder && !capacityReleased && closesKitchen) {
       const serviceRef = orderServiceRef(order);
       const serviceDoc = await tx.get(serviceRef);
       if (serviceDoc.exists) {
@@ -1928,6 +2423,19 @@ export const transitionOrder = async (
       await sendVipOrderDeliveredEmail(updated);
     } catch (error) {
       console.error("[Brevo] sendVipOrderDeliveredEmail failed after delivery", {
+        orderId,
+        message: error instanceof Error ? error.message : "unknown error",
+      });
+    }
+  } else if (
+    isVipPreorder(updated) &&
+    previousStatus !== VipOrderStatus.ON_THE_WAY &&
+    updated.status === VipOrderStatus.ON_THE_WAY
+  ) {
+    try {
+      await sendVipPreorderOnTheWayEmail(updated);
+    } catch (error) {
+      console.error("[Brevo] sendVipPreorderOnTheWayEmail failed after dispatch", {
         orderId,
         message: error instanceof Error ? error.message : "unknown error",
       });
@@ -2055,7 +2563,8 @@ async function performRefund(
     for (const reservation of confirmedReservations) {
       const data = reservation.data() || {};
       const inventoryId = String(data.inventoryId || "");
-      const restoreStock = isOpenInventoryHeader(inventoryHeaders.get(inventoryId)?.data());
+      const restoreStock = vipReservationDecrementedStock(data) &&
+        isOpenInventoryHeader(inventoryHeaders.get(inventoryId)?.data());
       const stock = restoreStock
         ? await tx.get(
           col(COLLECTIONS.INVENTARIOS).doc(inventoryId)
@@ -2064,14 +2573,23 @@ async function performRefund(
         : null;
       confirmed.push({ reservation, stock, restoreStock });
     }
-    const serviceRef = orderServiceRef(latestOrder);
-    const serviceDoc = latestOrder.capacityReleased ? null : await tx.get(serviceRef);
+    const capacity = orderCapacityTarget(latestOrder);
+    const capacityDoc = latestOrder.capacityReleased ? null : await tx.get(capacity.ref);
+    const saleDocs = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    for (const fulfillment of latestOrder.fulfillments) {
+      const saleRef = col(COLLECTIONS.COMPROBANTES_VENTA).doc(
+        vipSaleDocId(orderId, fulfillment, latestOrder.fulfillments),
+      );
+      saleDocs.set(saleRef.path, await tx.get(saleRef));
+    }
     for (const pair of confirmed) {
       const data = pair.reservation.data() || {};
       const quantity = Number(data.quantity || 0);
       if (pair.restoreStock && pair.stock) {
         const current = Number(pair.stock.data()?.cantidad_final ?? pair.stock.data()?.cantidad_inicial ?? 0);
-        const restored = releaseVipStock(current, quantity);
+        const restored = data.inventoryDeferred === true
+          ? restoreAppliedVipStock(current, quantity)
+          : releaseVipStock(current, quantity);
         tx.update(pair.stock.ref, { cantidad_final: restored, updatedAt: FieldValue.serverTimestamp() });
         tx.create(
           col(COLLECTIONS.INVENTARIOS).doc(String(data.inventoryId))
@@ -2095,14 +2613,18 @@ async function performRefund(
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
-    if (!latestOrder.capacityReleased && serviceDoc?.exists) {
-      tx.update(serviceRef, {
-        activeOrderCount: Math.max(0, activeOrderCount(serviceDoc.data() || {}) - 1),
+    if (!latestOrder.capacityReleased && capacityDoc?.exists) {
+      tx.update(capacity.ref, {
+        [capacity.field]: decrementedCapacity(capacityDoc.data() || {}, capacity.field),
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
     for (const fulfillment of latestOrder.fulfillments) {
-      tx.set(col(COLLECTIONS.COMPROBANTES_VENTA).doc(vipSaleDocId(orderId, fulfillment, latestOrder.fulfillments)), {
+      const saleRef = col(COLLECTIONS.COMPROBANTES_VENTA).doc(
+        vipSaleDocId(orderId, fulfillment, latestOrder.fulfillments),
+      );
+      if (!saleDocs.get(saleRef.path)?.exists) continue;
+      tx.set(saleRef, {
         status: "REFUNDED",
         refundId: refund.id,
         refundedAt: FieldValue.serverTimestamp(),
@@ -2204,10 +2726,14 @@ export const refundOrder = performRefund;
 export const getPrintData = async (orderId: string, actor: Actor) => {
   const order = await loadOrder(orderId);
   await orderEventRef(orderId).set(eventPayload("PRINT_REQUESTED", order.status, order.status, actor));
+  const preorder = serializePreorderInfo(order.preorder);
   return {
+    orderType: preorder ? "PREORDER" : "IMMEDIATE",
+    preorder,
     preparationTickets: order.fulfillments.map((fulfillment) => ({
       orderId: order.id,
       orderNumber: order.orderNumber,
+      preorder,
       concession: { id: fulfillment.concessionId, name: fulfillment.concessionName },
       items: order.items.filter((item) => fulfillment.itemIds.includes(item.id)).map((item) => ({
         name: item.name,
@@ -2221,6 +2747,8 @@ export const getPrintData = async (orderId: string, actor: Actor) => {
     deliveryTicket: {
       orderId: order.id,
       orderNumber: order.orderNumber,
+      guideCode: formatGuideCode(order.guideCode),
+      preorder,
       customer: order.customer,
       delivery: order.delivery,
       itemsCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
@@ -2255,6 +2783,7 @@ export const expireReservations = async (limit = 100) => {
     }
   }
   for (const doc of activeSnap.docs) {
+    if (doc.data()?.inventoryDeferred === true) continue;
     if (closedInventories.has(String(doc.data().inventoryId || ""))) {
       orderIds.add(String(doc.data().orderId));
     }

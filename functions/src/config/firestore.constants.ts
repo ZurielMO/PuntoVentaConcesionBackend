@@ -35,6 +35,17 @@ export const COLLECTIONS = {
   VIP_IDEMPOTENCY: "vip_idempotency",
   VIP_REFUND_OPERATIONS: "vip_refund_operations",
   VIP_RATE_LIMITS: "vip_rate_limits",
+  /** `default` + overrides por partido (`{matchId}`): ventanas y cupos de preventa. */
+  VIP_PREORDER_CONFIGS: "vip_preorder_configs",
+  /** Contador transaccional por ventana: `{matchId}__{zona}__{HHmm}`. */
+  VIP_PREORDER_SLOTS: "vip_preorder_slots",
+  /** Índice único código de guía → orderId (consulta pública de estatus). */
+  VIP_ORDER_GUIDES: "vip_order_guides",
+  /**
+   * Última jornada activa leída de Acreditaciones, por rama.
+   * La preventa la usa si Realtime Database no responde.
+   */
+  JORNADA_ACTIVA_CACHE: "jornada_activa_cache",
 } as const;
 
 // Subcolecciones.

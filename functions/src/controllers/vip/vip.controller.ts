@@ -8,6 +8,7 @@ import {
   isSuperAdmin,
 } from "../../utils/roles.middlewares";
 import * as vipService from "../../services/vip/vip.service";
+import * as vipPreorderService from "../../services/vip/vip-preorder.service";
 
 const actorFrom = (req: Request) => ({
   actorId: req.user?.uid || null,
@@ -121,27 +122,75 @@ export const legacyCreateOrder = asyncHandler(async (_req: Request, res: Respons
   });
 });
 
-export const listAdminOrders = asyncHandler(async (req: Request, res: Response) => {
-  const filters = { ...req.query } as unknown as Parameters<typeof vipService.listAdminOrders>[0];
-  if (!isSuperAdmin(req.user)) {
-    if (isAdminCerveceria(req.user)) {
-      const sucursalId = getUserSucursalId(req.user);
-      if (!sucursalId) {
-        throw new ApiError(403, "Usuario sin sucursal asignada.", true, "VIP_UNAUTHORIZED");
-      }
-      filters.sucursalId = sucursalId;
-      delete filters.concessionId;
-    } else {
-      const concessionId = getUserConcessionId(req.user);
-      if (!concessionId) {
-        throw new ApiError(403, "Usuario sin concesión asignada.", true, "VIP_UNAUTHORIZED");
-      }
-      filters.concessionId = concessionId;
-      delete filters.sucursalId;
+/** Los filtros de concesión/sucursal de no-superadmins salen del token, nunca del query. */
+const scopeAdminFilters = <T extends { concessionId?: string; sucursalId?: string }>(
+  req: Request,
+  filters: T,
+): T => {
+  if (isSuperAdmin(req.user)) return filters;
+  if (isAdminCerveceria(req.user)) {
+    const sucursalId = getUserSucursalId(req.user);
+    if (!sucursalId) {
+      throw new ApiError(403, "Usuario sin sucursal asignada.", true, "VIP_UNAUTHORIZED");
     }
+    filters.sucursalId = sucursalId;
+    delete filters.concessionId;
+    return filters;
   }
+  const concessionId = getUserConcessionId(req.user);
+  if (!concessionId) {
+    throw new ApiError(403, "Usuario sin concesión asignada.", true, "VIP_UNAUTHORIZED");
+  }
+  filters.concessionId = concessionId;
+  delete filters.sucursalId;
+  return filters;
+};
+
+export const listAdminOrders = asyncHandler(async (req: Request, res: Response) => {
+  const filters = scopeAdminFilters(
+    req,
+    { ...req.query } as unknown as Parameters<typeof vipService.listAdminOrders>[0],
+  );
   const result = await vipService.listAdminOrders(filters);
   res.status(200).json({ success: true, ...result });
+});
+
+export const listAdminPreorders = asyncHandler(async (req: Request, res: Response) => {
+  const filters = scopeAdminFilters(
+    req,
+    { ...req.query } as unknown as Parameters<typeof vipService.listAdminPreorders>[0],
+  );
+  const result = await vipService.listAdminPreorders(filters);
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ success: true, ...result, count: result.data.length });
+});
+
+export const getPreorderAvailability = asyncHandler(async (req: Request, res: Response) => {
+  const zona = req.query.zona === "Oriente" || req.query.zona === "Poniente" ? req.query.zona : undefined;
+  const data = await vipPreorderService.getPreorderAvailability(zona);
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ success: true, data });
+});
+
+export const lookupOrderByGuide = asyncHandler(async (req: Request, res: Response) => {
+  const data = await vipService.lookupOrderByGuide(String(req.query.guide || ""));
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ success: true, data });
+});
+
+export const getAdminPreorderSettings = asyncHandler(async (_req: Request, res: Response) => {
+  const data = await vipService.getAdminPreorderSettings();
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ success: true, data });
+});
+
+export const setAdminPreorderSettings = asyncHandler(async (req: Request, res: Response) => {
+  const data = await vipService.setAdminPreorderSettings(
+    String(req.body.password || ""),
+    req.body.enabled === true,
+    req.user?.uid || null,
+  );
+  res.status(200).json({ success: true, data });
 });
 
 export const getAdminOrder = asyncHandler(async (req: Request, res: Response) => {
@@ -192,5 +241,26 @@ export const printData = asyncHandler(async (req: Request, res: Response) => {
 
 export const unlockCentralZone = asyncHandler(async (req: Request, res: Response) => {
   const data = vipService.unlockCentralZone(String(req.body.password || ""), req.body.zona);
+  res.status(200).json({ success: true, data });
+});
+
+export const getPublicServiceStatus = asyncHandler(async (_req: Request, res: Response) => {
+  const data = await vipService.getPublicSalesStatus();
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ success: true, data });
+});
+
+export const getAdminPublicSales = asyncHandler(async (_req: Request, res: Response) => {
+  const data = await vipService.getPublicSalesStatus();
+  res.set("Cache-Control", "no-store");
+  res.status(200).json({ success: true, data });
+});
+
+export const setAdminPublicSales = asyncHandler(async (req: Request, res: Response) => {
+  const data = await vipService.setPublicSalesStatus(
+    String(req.body.password || ""),
+    req.body.acceptingOrders === true,
+    req.user?.uid || null,
+  );
   res.status(200).json({ success: true, data });
 });

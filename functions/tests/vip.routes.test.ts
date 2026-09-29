@@ -56,6 +56,28 @@ describe("VIP route boundary security", () => {
   });
 
   it.each([
+    ["get", "/api/vip/admin/preorders?zona=Oriente"],
+    ["get", "/api/vip/admin/preorder-settings"],
+    ["post", "/api/vip/admin/preorder-settings"],
+  ] as const)("%s %s requires staff auth", async (method, path) => {
+    const response = await request(app)[method](path).send({ password: "Palcos.2026", enabled: true });
+    expect(response.status).toBe(401);
+    expect(response.body.code).toBe("UNAUTHENTICATED");
+  });
+
+  it("rejects malformed guide lookups before touching Firestore", async () => {
+    const response = await request(app).get("/api/vip/orders/lookup").query({ guide: "<script>" });
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VIP_INVALID_GUIDE");
+  });
+
+  it("rejects an unknown zone in preorder availability", async () => {
+    const response = await request(app).get("/api/vip/preorders/availability").query({ zona: "Norte" });
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VIP_INVALID_REQUEST");
+  });
+
+  it.each([
     ["patch", "/api/vip/admin/orders/order-1/status"],
     ["patch", "/api/vip/admin/orders/order-1/runner"],
     ["post", "/api/vip/admin/orders/order-1/cancel"],

@@ -1,5 +1,7 @@
 import { sendBrevoEmail } from "../../clients/brevo.client";
-import type { VipOrder, VipOrderItemSnapshot } from "../../models/vip.model";
+import { resolveVipFrontendOrigin } from "../../config/vip.config";
+import { isVipPreorder, type VipOrder, type VipOrderItemSnapshot, type VipPreorderInfo } from "../../models/vip.model";
+import { formatGuideCode, formatMatchDateLong, VIP_TIME_ZONE } from "./vip-preorder.utils";
 
 const CLUB_LEON_LOGO_URL =
   "https://storage.googleapis.com/app-oficial-leon.firebasestorage.app/galeria/e5a06d0a-9ca3-4864-b481-be2e7b0fa23a.png";
@@ -117,12 +119,137 @@ const notifyEmailFailure = (context: string, error: unknown): void => {
   console.error(`[Brevo] ${context} threw`, error instanceof Error ? error.message : error);
 };
 
+const guideLookupUrl = (guide: string): string | null => {
+  try {
+    return `${resolveVipFrontendOrigin()}/servicio-palcos/guia/?codigo=${encodeURIComponent(guide)}`;
+  } catch {
+    return null;
+  }
+};
+
+const guideBlockHtml = (order: VipOrder): string => {
+  const guide = formatGuideCode(order.guideCode);
+  if (!guide) return "";
+  const url = guideLookupUrl(guide);
+  return `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 26px;border:1px solid #E2E8F0;border-radius:14px;background-color:#F7FAF8;">
+    <tr>
+      <td style="padding:20px 20px 22px;text-align:center;">
+        <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#9E7844;font-weight:700;">Guía de pedido</div>
+        <div style="font-family:'SFMono-Regular',Menlo,Consolas,'Courier New',monospace;font-size:28px;letter-spacing:5px;font-weight:700;color:#0A1C16;margin-top:6px;">${escapeHtml(guide)}</div>
+        <div style="font-size:12px;color:#718096;margin-top:6px;">Ingrésala en la página de Servicio Palcos para ver el estatus de tu pedido.</div>
+        ${url ? `<a href="${escapeHtml(url)}" style="display:inline-block;margin-top:14px;background-color:#007A53;color:#ffffff;text-decoration:none;font-weight:700;font-size:13px;padding:10px 20px;border-radius:999px;">Consultar mi pedido</a>` : ""}
+      </td>
+    </tr>
+  </table>`;
+};
+
+const kickoffTimeLabel = (preorder: VipPreorderInfo): string | null => {
+  const millis = preorder.kickoffAt?.toMillis?.();
+  if (!millis) return null;
+  return new Intl.DateTimeFormat("es-MX", {
+    timeZone: VIP_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(millis));
+};
+
+const preorderBlockHtml = (preorder: VipPreorderInfo): string => {
+  const kickoff = kickoffTimeLabel(preorder);
+  const dateLine = [formatMatchDateLong(preorder.matchDate), kickoff ? `Inicio ${kickoff} h` : null]
+    .filter(Boolean)
+    .join(" · ");
+  return `
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 22px;border-radius:14px;background-color:#0A1C16;">
+    <tr>
+      <td style="padding:18px 20px;">
+        <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#D4AF37;font-weight:700;">Preventa · Partido ${escapeHtml(String(preorder.jornadaNumero))}</div>
+        <div style="font-size:18px;font-weight:700;color:#ffffff;margin-top:4px;">${escapeHtml(preorder.matchLabel)}</div>
+        <div style="font-size:13px;color:#A7B8B0;margin-top:2px;text-transform:capitalize;">${escapeHtml(dateLine)}</div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid #1E3A2F;">
+          <span style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#A7B8B0;">Ventana de entrega</span><br/>
+          <span style="font-size:22px;font-weight:700;color:#FADC06;letter-spacing:1px;">${escapeHtml(preorder.windowLabel)}</span>
+        </div>
+      </td>
+    </tr>
+  </table>`;
+};
+
+const guideTextLines = (order: VipOrder): string[] => {
+  const guide = formatGuideCode(order.guideCode);
+  if (!guide) return [];
+  const url = guideLookupUrl(guide);
+  return [`Guía de pedido: ${guide}`, ...(url ? [`Consulta el estatus: ${url}`] : [])];
+};
+
+async function sendVipPreorderPaidEmail(order: VipOrder, preorder: VipPreorderInfo): Promise<boolean> {
+  const email = order.customer.email.trim();
+  const name = order.customer.name || "Cliente";
+  const subject = `Preventa confirmada ${order.orderNumber} - Servicio Palcos Club León`;
+  try {
+    return await sendBrevoEmail({
+      to: email,
+      name,
+      subject,
+      htmlContent: wrapHtml(
+        subject,
+        `¡Hola ${escapeHtml(name)}!`,
+        `<p>Tu preventa quedó <strong>pagada y programada</strong>. Prepararemos tu pedido con anticipación para entregarlo en tu palco dentro de la ventana que elegiste.</p>${preorderBlockHtml(preorder)}${guideBlockHtml(order)}${orderSummaryHtml(order)}<div class="note">El horario es estimado: el equipo de Servicio Palcos llegará dentro de tu ventana de entrega. Te avisaremos por correo cuando tu pedido vaya en camino.</div>`,
+      ),
+      textContent: [
+        `Hola ${name},`,
+        `Tu preventa ${order.orderNumber} está pagada y programada.`,
+        `Partido ${preorder.jornadaNumero} · ${preorder.matchLabel} (${formatMatchDateLong(preorder.matchDate)})`,
+        `Ventana de entrega: ${preorder.windowLabel}`,
+        `Entrega: Palco ${order.delivery?.palco || ""} · ${order.delivery?.zona || ""}`,
+        ...guideTextLines(order),
+        `Total: ${money(order.total)}`,
+        "Club León - Servicio Palcos",
+      ].join("\n"),
+    });
+  } catch (error) {
+    notifyEmailFailure("sendVipPreorderPaidEmail", error);
+    return false;
+  }
+}
+
+export async function sendVipPreorderOnTheWayEmail(order: VipOrder): Promise<boolean> {
+  const email = order.customer?.email?.trim();
+  if (!email || !isVipPreorder(order)) return false;
+  const name = order.customer.name || "Cliente";
+  const subject = `Tu preventa va en camino ${order.orderNumber} - Servicio Palcos Club León`;
+  try {
+    return await sendBrevoEmail({
+      to: email,
+      name,
+      subject,
+      htmlContent: wrapHtml(
+        subject,
+        `¡Hola ${escapeHtml(name)}!`,
+        `<p>Tu pedido <strong>${escapeHtml(order.orderNumber)}</strong> ya salió rumbo a tu palco (${deliveryLine(order)}).</p>${preorderBlockHtml(order.preorder)}${guideBlockHtml(order)}<div class="note">Ten a la mano tu guía de pedido por si el staff la solicita al entregar.</div>`,
+      ),
+      textContent: [
+        `Hola ${name},`,
+        `Tu preventa ${order.orderNumber} va en camino a tu palco ${order.delivery?.palco || ""}.`,
+        `Ventana de entrega: ${order.preorder.windowLabel}`,
+        ...guideTextLines(order),
+        "Club León - Servicio Palcos",
+      ].join("\n"),
+    });
+  } catch (error) {
+    notifyEmailFailure("sendVipPreorderOnTheWayEmail", error);
+    return false;
+  }
+}
+
 export async function sendVipOrderPaidEmail(order: VipOrder): Promise<boolean> {
   const email = order.customer?.email?.trim();
   if (!email) {
     console.error("[Brevo] Orden de palcos sin email de cliente", { orderId: order.id });
     return false;
   }
+  if (isVipPreorder(order)) return sendVipPreorderPaidEmail(order, order.preorder);
   const name = order.customer.name || "Cliente";
   const subject = `Pedido confirmado ${order.orderNumber} - Servicio Palcos Club León`;
   try {
@@ -133,12 +260,13 @@ export async function sendVipOrderPaidEmail(order: VipOrder): Promise<boolean> {
       htmlContent: wrapHtml(
         subject,
         `¡Hola ${escapeHtml(name)}!`,
-        `<p>Recibimos tu pago y ya estamos preparando tu pedido para llevarlo a tu palco.</p>${orderSummaryHtml(order)}<div class="note">Guarda este correo como comprobante. El equipo de Servicio Palcos te entregará el pedido en el palco indicado.</div>`,
+        `<p>Recibimos tu pago y ya estamos preparando tu pedido para llevarlo a tu palco.</p>${guideBlockHtml(order)}${orderSummaryHtml(order)}<div class="note">Guarda este correo como comprobante. El equipo de Servicio Palcos te entregará el pedido en el palco indicado.</div>`,
       ),
       textContent: [
         `Hola ${name},`,
         `Recibimos tu pago. Pedido ${order.orderNumber}.`,
         `Entrega: Palco ${order.delivery?.palco || ""} · ${order.delivery?.zona || ""}`,
+        ...guideTextLines(order),
         `Total: ${money(order.total)}`,
         "Club León - Servicio Palcos",
       ].join("\n"),

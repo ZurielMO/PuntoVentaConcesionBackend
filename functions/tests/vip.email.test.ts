@@ -131,6 +131,48 @@ describe("VIP Brevo emails", () => {
     expect(payload.htmlContent).toContain("12");
   });
 
+  it("sends the guide code in a normal paid confirmation", async () => {
+    const { sendVipOrderPaidEmail } = await import("../src/services/vip/vip-email.service");
+    await sendVipOrderPaidEmail(sampleOrder({ guideCode: "7KQ4M2XD" }));
+    const payload = mockedAxios.post.mock.calls[0][1] as { htmlContent: string; textContent: string };
+    expect(payload.htmlContent).toContain("Guía de pedido");
+    expect(payload.htmlContent).toContain("7KQ4-M2XD");
+    expect(payload.textContent).toContain("Guía de pedido: 7KQ4-M2XD");
+  });
+
+  it("sends a preorder confirmation with match, delivery window and guide", async () => {
+    const { sendVipOrderPaidEmail } = await import("../src/services/vip/vip-email.service");
+    await sendVipOrderPaidEmail(sampleOrder({
+      orderNumber: "PREV-20261004-ABC123",
+      orderType: "PREORDER",
+      guideCode: "7KQ4M2XD",
+      status: VipOrderStatus.ACCEPTED,
+      preorder: {
+        matchId: "2026-10-04__J11",
+        jornadaNumero: 11,
+        matchDate: "2026-10-04",
+        matchLabel: "León vs Puebla",
+        homeTeam: "León",
+        awayTeam: "Puebla",
+        stadium: "Estadio León",
+        kickoffAt: Timestamp.fromDate(new Date("2026-10-05T01:05:00.000Z")),
+        windowStart: "18:30",
+        windowEnd: "18:55",
+        windowLabel: "18:30 – 18:55",
+        windowStartAt: Timestamp.fromDate(new Date("2026-10-05T00:30:00.000Z")),
+        windowEndAt: Timestamp.fromDate(new Date("2026-10-05T00:55:00.000Z")),
+        slotId: "2026-10-04__J11__Poniente__1830",
+      },
+    }));
+    const payload = mockedAxios.post.mock.calls[0][1] as { subject: string; htmlContent: string };
+    expect(payload.subject).toBe("Preventa confirmada PREV-20261004-ABC123 - Servicio Palcos Club León");
+    expect(payload.htmlContent).toContain("León vs Puebla");
+    expect(payload.htmlContent).toContain("18:30 – 18:55");
+    expect(payload.htmlContent).toContain("Partido 11");
+    expect(payload.htmlContent).toContain("Inicio 19:05 h");
+    expect(payload.htmlContent).toContain("7KQ4-M2XD");
+  });
+
   it("escapes HTML in customer and product names", async () => {
     const { sendVipOrderPaidEmail } = await import("../src/services/vip/vip-email.service");
     const order = sampleOrder({

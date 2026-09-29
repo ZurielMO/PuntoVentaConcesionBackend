@@ -41,6 +41,11 @@ export const vipCheckoutSchema = z.object({
     notes: z.string().trim().max(500).optional(),
   }).strict()).min(1).max(100),
   tip: z.number().nonnegative().max(10000).optional().default(0),
+  /** Solo propone partido + inicio de ventana; el backend recalcula ventana, cupo y anticipación. */
+  preorder: z.object({
+    matchId: id,
+    windowStart: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Horario inválido (HH:mm)."),
+  }).strict().optional(),
 }).strict();
 
 export const vipConfirmSessionSchema = z.object({
@@ -96,6 +101,31 @@ export const vipAdminListSchema = z.object({
 export const vipCentralZoneUnlockSchema = z.object({
   password: z.string().min(1).max(80),
   zona: z.enum(VIP_STADIUM_ZONES),
+}).strict();
+
+export const vipPublicSalesSchema = z.object({
+  password: z.string().min(1).max(80),
+  acceptingOrders: z.boolean(),
+}).strict();
+
+export const vipPreorderAvailabilityQuerySchema = z.object({
+  zona: z.enum(VIP_STADIUM_ZONES).optional(),
+}).strict();
+
+export const vipGuideLookupQuerySchema = z.object({
+  guide: z.string().trim().min(8).max(16).regex(/^[0-9A-Za-z\s-]+$/),
+}).strict();
+
+export const vipAdminPreordersQuerySchema = z.object({
+  zona: z.enum(VIP_STADIUM_ZONES),
+  from: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  concessionId: id.optional(),
+  sucursalId: id.optional(),
+}).strict();
+
+export const vipPreorderSettingsSchema = z.object({
+  password: z.string().min(1).max(80),
+  enabled: z.boolean(),
 }).strict();
 
 export type VipCheckoutInput = z.infer<typeof vipCheckoutSchema>;
