@@ -1,8 +1,14 @@
 import { z } from "zod";
 
+const descripcionSchema = z
+  .string()
+  .max(1000)
+  .transform((value) => value.trim());
+
 export const createProductSchema = z
   .object({
     nombre: z.string().min(1).max(200),
+    descripcion: descripcionSchema.optional().default(""),
     unidad_medida: z.string().min(1).max(50),
     precio: z.number().nonnegative(),
     imagenes: z.array(z.string().url()).optional().default([]),
@@ -15,6 +21,7 @@ export const createProductSchema = z
 export const updateProductSchema = z
   .object({
     nombre: z.string().min(1).max(200).optional(),
+    descripcion: descripcionSchema.optional(),
     unidad_medida: z.string().min(1).max(50).optional(),
     precio: z.number().nonnegative().optional(),
     imagenes: z.array(z.string().url()).optional(),

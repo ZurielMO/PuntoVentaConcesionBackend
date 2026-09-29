@@ -69,6 +69,8 @@ export interface Sucursal extends BaseEntity {
 export interface Product extends BaseEntity {
     concesion_id: string;
     nombre: string;
+    /** Características del producto. Vacío si no se capturaron. */
+    descripcion: string;
     unidad_medida: string;
     precio: number;
     imagenes: string[];

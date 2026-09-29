@@ -6,6 +6,9 @@ import { normalizeRecordImageUrls } from "./storage.service";
 
 const col = () => firestorePos.collection(COLLECTIONS.PRODUCTS);
 
+/** Todos los productos se venden por pieza. */
+const UNIDAD_PRODUCTO = "pz";
+
 const toData = (doc: FirebaseFirestore.DocumentSnapshot): Record<string, unknown> & { id: string } =>
   normalizeRecordImageUrls({
     id: doc.id,
@@ -77,6 +80,7 @@ export const createProduct = async (
   concesionId: string,
   data: {
     nombre: string;
+    descripcion?: string;
     unidad_medida: string;
     precio: number;
     imagenes?: string[];
@@ -87,7 +91,8 @@ export const createProduct = async (
   const payload = {
     concesion_id: concesionId,
     nombre: data.nombre,
-    unidad_medida: data.unidad_medida,
+    descripcion: data.descripcion?.trim() ?? "",
+    unidad_medida: UNIDAD_PRODUCTO,
     precio: data.precio,
     imagenes: data.imagenes ?? [],
     activo: data.activo ?? true,
@@ -103,6 +108,7 @@ export const updateProduct = async (
   id: string,
   data: Partial<{
     nombre: string;
+    descripcion: string;
     unidad_medida: string;
     precio: number;
     imagenes: string[];

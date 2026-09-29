@@ -253,6 +253,7 @@ const swaggerDefinition = {
                 type: "object",
                 properties: {
                   nombre: { type: "string" },
+                  descripcion: { type: "string" },
                   unidad_medida: { type: "string" },
                   precio: { type: "number" },
                   activo: { type: "boolean" },
