@@ -1,42 +1,26 @@
-import axios from "axios";
+const mockAccrueSalePoints = jest.fn();
+const mockHoldSalePoints = jest.fn();
+const mockConfirmSalePointsHold = jest.fn();
+const mockCancelSalePointsHold = jest.fn();
+const mockResolveUsuarioAppRef = jest.fn();
+const mockReadAvailablePoints = jest.fn();
 
-const mockMovGet = jest.fn();
-const mockMovSet = jest.fn();
-const mockUserDocGet = jest.fn();
-const mockUserDocSet = jest.fn();
-const mockWhereGet = jest.fn();
-
-jest.mock("../src/config/app.firebase", () => ({
-  firestoreApp: {
-    collection: jest.fn(() => ({
-      doc: jest.fn(() => ({
-        get: (...args: unknown[]) => mockUserDocGet(...args),
-        set: (...args: unknown[]) => mockUserDocSet(...args),
-        collection: jest.fn(() => ({
-          doc: jest.fn(() => ({
-            get: (...args: unknown[]) => mockMovGet(...args),
-            set: (...args: unknown[]) => mockMovSet(...args),
-          })),
-        })),
-      })),
-      where: jest.fn(() => ({
-        limit: jest.fn(() => ({
-          get: (...args: unknown[]) => mockWhereGet(...args),
-        })),
-      })),
-    })),
-  },
+jest.mock("../src/services/loyalty-ledger.service", () => ({
+  accrueSalePoints: (...args: unknown[]) => mockAccrueSalePoints(...args),
+  holdSalePoints: (...args: unknown[]) => mockHoldSalePoints(...args),
+  confirmSalePointsHold: (...args: unknown[]) =>
+    mockConfirmSalePointsHold(...args),
+  cancelSalePointsHold: (...args: unknown[]) => mockCancelSalePointsHold(...args),
+  resolveUsuarioAppRef: (...args: unknown[]) => mockResolveUsuarioAppRef(...args),
+  readAvailablePoints: (...args: unknown[]) => mockReadAvailablePoints(...args),
 }));
 
-const mockEnqueuePendingAccrual = jest.fn();
 const mockMarkPendingAccrualCompleted = jest.fn();
 const mockMarkPendingAccrualFailed = jest.fn();
 const mockListPendingAccruals = jest.fn();
 
 jest.mock("../src/services/loyalty-outbox.service", () => ({
   buildPosSaleIdempotencyKey: (ventaId: string) => `pos-sale:${ventaId}`,
-  enqueuePendingAccrual: (...args: unknown[]) =>
-    mockEnqueuePendingAccrual(...args),
   markPendingAccrualCompleted: (...args: unknown[]) =>
     mockMarkPendingAccrualCompleted(...args),
   markPendingAccrualFailed: (...args: unknown[]) =>
@@ -55,46 +39,17 @@ import {
   createRedemptionHold,
   getClubMember,
   PUNTOS_POR_PESO_CANJE,
-  recordPosRedemptionMovement,
   ventaAcumulaPuntos,
 } from "../src/services/loyalty-points.service";
-
-jest.mock("axios");
-const mockedAxios = axios as jest.Mocked<typeof axios>;
+import { ApiError } from "../src/utils/api-error";
 
 describe("loyalty-points.service", () => {
-  beforeAll(() => {
-    process.env.BACKENDCL_API_BASE_URL =
-      "https://example.test/api";
-    process.env.BACKENDCL_BEARER_TOKEN = "test-jwt-token";
-  });
-
   beforeEach(() => {
     jest.clearAllMocks();
-    mockMovGet.mockResolvedValue({ exists: false });
-    mockMovSet.mockResolvedValue(undefined);
-    mockUserDocGet.mockResolvedValue({ exists: false, data: () => undefined });
-    mockUserDocSet.mockResolvedValue(undefined);
-    mockWhereGet.mockResolvedValue({ empty: true, docs: [] });
-    mockEnqueuePendingAccrual.mockImplementation(async (params) => ({
-      id: `pos_acc_${params.ventaId}`,
-      idempotencyKey: `pos-sale:${params.ventaId}`,
-      status: "PENDING",
-      attempts: 1,
-      ...params,
-    }));
     mockMarkPendingAccrualCompleted.mockResolvedValue(undefined);
     mockMarkPendingAccrualFailed.mockResolvedValue(undefined);
     mockListPendingAccruals.mockResolvedValue([]);
-    (mockedAxios.isAxiosError as unknown as jest.Mock).mockImplementation(
-      (payload: unknown) =>
-        Boolean(
-          payload &&
-            typeof payload === "object" &&
-            "isAxiosError" in payload &&
-            (payload as { isAxiosError?: boolean }).isAxiosError,
-        ),
-    );
+    mockCancelSalePointsHold.mockResolvedValue(undefined);
   });
 
   it("calcularPuntosPorVenta redondea al 10%", () => {
@@ -180,203 +135,47 @@ describe("loyalty-points.service", () => {
     });
   });
 
-  it("getClubMember llama GET /api/usuarios/{id} con Bearer", async () => {
-    mockedAxios.get.mockResolvedValueOnce({
+  // El perfil sale de usuariosApp, pero el saldo lo dicta el wallet: el campo
+  // `puntosActuales` del socio es solo un espejo y puede venir desfasado.
+  it("getClubMember toma el perfil de usuariosApp y el saldo del wallet", async () => {
+    mockResolveUsuarioAppRef.mockResolvedValueOnce({
+      ref: {},
+      id: "doc-1",
       data: {
-        success: true,
-        data: {
-          id: "uid-1",
-          nombre: "Juan Pérez",
-          email: "juan@test.com",
-          puntosActuales: 120,
-        },
-      },
-    } as never);
-
-    const member = await getClubMember("uid-1");
-
-    expect(member).toEqual({
-      id: "uid-1",
-      nombre: "Juan Pérez",
-      email: "juan@test.com",
-      puntosActuales: 120,
-    });
-
-    expect(mockedAxios.get).toHaveBeenCalledWith(
-      "https://example.test/api/usuarios/uid-1",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer test-jwt-token",
-        }),
-      }),
-    );
-  });
-
-  it("getClubMember usa usuariosApp si BackendCL no responde", async () => {
-    mockedAxios.get.mockRejectedValueOnce(new Error("ECONNRESET"));
-    mockUserDocGet.mockResolvedValueOnce({
-      exists: true,
-      id: "uid-1",
-      data: () => ({
         uid: "uid-1",
         nombre: "Ana Socio",
         email: "ana@test.com",
         puntosActuales: 80,
-      }),
+      },
     });
+    mockReadAvailablePoints.mockResolvedValueOnce(8);
 
-    const member = await getClubMember("uid-1");
-
-    expect(member).toEqual({
+    await expect(getClubMember("uid-1")).resolves.toEqual({
       id: "uid-1",
       nombre: "Ana Socio",
       email: "ana@test.com",
-      puntosActuales: 80,
+      puntosActuales: 8,
     });
   });
 
-  it("assignPointsBySale mapea 403 como permisos insuficientes", async () => {
-    mockedAxios.post.mockRejectedValueOnce({
-      isAxiosError: true,
-      response: { status: 403, data: { message: "No tienes permisos" } },
-    });
+  it("getClubMember responde MEMBER_NOT_FOUND si el socio no existe", async () => {
+    mockResolveUsuarioAppRef.mockResolvedValueOnce(null);
 
-    await expect(
-      assignPointsBySale({ memberId: "uid-2", total: 100, ventaId: "V-1" }),
-    ).rejects.toMatchObject({
-      code: "BACKENDCL_FORBIDDEN",
-      message: expect.stringContaining("CONCESION_VENDEDOR"),
+    await expect(getClubMember("uid-fantasma")).rejects.toMatchObject({
+      statusCode: 404,
+      code: "MEMBER_NOT_FOUND",
     });
   });
 
-  it("createRedemptionHold y confirmRedemptionHold usan el namespace interno", async () => {
-    mockedAxios.post
-      .mockResolvedValueOnce({
-        data: {
-          redemption: { redemptionId: "red-1" },
-        },
-      } as never)
-      .mockResolvedValueOnce({
-        data: {
-          transaction: { balanceAfter: 420 },
-        },
-      } as never);
-
-    const hold = await createRedemptionHold({
-      memberId: "uid-3",
-      puntos: 500,
-      ventaId: "V-500",
+  it("assignPointsBySale acredita el 10% y devuelve el saldo del ledger", async () => {
+    mockAccrueSalePoints.mockResolvedValueOnce({
+      memberId: "uid-2",
+      status: "APPLIED",
+      puntosAsignados: 32,
+      saldoAnterior: 120,
+      puntosActuales: 152,
+      movimientoId: "pos_acc_V-123",
     });
-    expect(hold.redemptionId).toBe("red-1");
-
-    const result = await confirmRedemptionHold({
-      redemptionId: hold.redemptionId,
-      ventaId: "V-500",
-      memberId: "uid-3",
-      puntosCanjeados: 500,
-      descripcion: "Canje POS V-500",
-    });
-
-    expect(result.puntosCanjeados).toBe(500);
-    expect(result.montoPuntos).toBe(50);
-    expect(result.puntosActuales).toBe(420);
-
-    // /api/loyalty/v1 lo intercepta el router de partners y responde 401 a un
-    // JWT de sesión: las rutas del POS tienen que ir al namespace interno.
-    expect(mockedAxios.post.mock.calls[0][0]).toBe(
-      "https://example.test/api/loyalty/internal/v1/redemptions",
-    );
-    expect(mockedAxios.post.mock.calls[1][0]).toBe(
-      "https://example.test/api/loyalty/internal/v1/redemptions/red-1/confirm",
-    );
-    expect(mockMovSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tipo: "CANJE",
-        puntos: -500,
-        origen: "pos",
-        origenId: "V-500",
-        referencia: "V-500",
-        descripcion: "Pago en concesión - V-500",
-        saldoAnterior: 920,
-        saldoNuevo: 420,
-      }),
-    );
-  });
-
-  it("si el namespace interno responde 404 reintenta con /api/loyalty/v1", async () => {
-    const notFound = Object.assign(new Error("not found"), {
-      isAxiosError: true,
-      response: { status: 404, data: {} },
-    });
-    mockedAxios.post
-      .mockRejectedValueOnce(notFound as never)
-      .mockResolvedValueOnce({
-        data: { redemption: { redemptionId: "red-alt" } },
-      } as never);
-
-    const hold = await createRedemptionHold({
-      memberId: "uid-9",
-      puntos: 100,
-      ventaId: "V-ALT",
-    });
-
-    expect(hold.redemptionId).toBe("red-alt");
-    expect(mockedAxios.post.mock.calls[0][0]).toBe(
-      "https://example.test/api/loyalty/internal/v1/redemptions",
-    );
-    expect(mockedAxios.post.mock.calls[1][0]).toBe(
-      "https://example.test/api/loyalty/v1/redemptions",
-    );
-  });
-
-  it("recordPosRedemptionMovement es idempotente por ventaId", async () => {
-    mockMovGet.mockResolvedValueOnce({ exists: true });
-
-    await recordPosRedemptionMovement({
-      memberId: "uid-1",
-      ventaId: "V-123",
-      puntosCanjeados: 500,
-      saldoNuevo: 578,
-    });
-
-    expect(mockMovSet).not.toHaveBeenCalled();
-  });
-
-  it("recordPosRedemptionMovement escribe movimiento_puntos con folio POS", async () => {
-    await recordPosRedemptionMovement({
-      memberId: "uid-1",
-      ventaId: "V-1783376649722",
-      puntosCanjeados: 500,
-      saldoNuevo: 578,
-    });
-
-    expect(mockMovSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "pos_V-1783376649722",
-        usuarioId: "uid-1",
-        tipo: "CANJE",
-        puntos: -500,
-        saldoAnterior: 1078,
-        saldoNuevo: 578,
-        origen: "pos",
-        origenId: "V-1783376649722",
-        referencia: "V-1783376649722",
-        descripcion: "Pago en concesión - V-1783376649722",
-      }),
-    );
-  });
-
-  it("assignPointsBySale llama asignar-por-venta con dinero y descripcion", async () => {
-    mockedAxios.post.mockResolvedValueOnce({
-      data: {
-        success: true,
-        data: {
-          montoVenta: 320,
-          puntosAsignados: 32,
-          puntosActuales: 152,
-        },
-      },
-    } as never);
 
     const result = await assignPointsBySale({
       memberId: "uid-2",
@@ -384,38 +183,33 @@ describe("loyalty-points.service", () => {
       ventaId: "V-123",
     });
 
-    expect(result.puntosAsignados).toBe(32);
-    expect(result.descripcion).toBe("Venta POS V-123");
-
-    const [url, body] = mockedAxios.post.mock.calls[0];
-    expect(url).toBe(
-      "https://example.test/api/usuarios/uid-2/puntos/asignar-por-venta",
-    );
-    expect(body).toEqual({
-      folioVenta: "V-123",
-      dinero: 320,
+    expect(mockAccrueSalePoints).toHaveBeenCalledWith({
+      memberId: "uid-2",
+      ventaId: "V-123",
+      puntos: 32,
       descripcion: "Venta POS V-123",
-      externalTransactionId: "pos-sale:V-123",
+      montoVenta: 320,
     });
-    expect(result.status).toBe("APPLIED");
-    expect(result.externalTransactionId).toBe("pos-sale:V-123");
+    expect(result).toMatchObject({
+      status: "APPLIED",
+      puntosAsignados: 32,
+      puntosActuales: 152,
+      alreadyProcessed: false,
+      externalTransactionId: "pos-sale:V-123",
+      descripcion: "Venta POS V-123",
+    });
   });
 
-  // Caso 2: la misma venta enviada dos veces se acredita una sola vez.
+  // La misma venta enviada dos veces se acredita una sola vez.
   it("assignPointsBySale reporta ALREADY_PROCESSED sin volver a acreditar", async () => {
-    mockedAxios.post.mockResolvedValueOnce({
-      data: {
-        success: true,
-        alreadyProcessed: true,
-        code: "ALREADY_PROCESSED",
-        data: {
-          montoVenta: 320,
-          puntosAsignados: 32,
-          puntosActuales: 152,
-          alreadyProcessed: true,
-        },
-      },
-    } as never);
+    mockAccrueSalePoints.mockResolvedValueOnce({
+      memberId: "uid-2",
+      status: "ALREADY_PROCESSED",
+      puntosAsignados: 32,
+      saldoAnterior: 120,
+      puntosActuales: 152,
+      movimientoId: "pos_acc_V-123",
+    });
 
     const result = await assignPointsBySale({
       memberId: "uid-2",
@@ -425,64 +219,92 @@ describe("loyalty-points.service", () => {
 
     expect(result.status).toBe("ALREADY_PROCESSED");
     expect(result.alreadyProcessed).toBe(true);
-    // El saldo devuelto es el del ledger, no una suma local.
     expect(result.puntosActuales).toBe(152);
-    expect(mockUserDocSet).not.toHaveBeenCalled();
   });
 
-  // Caso 3: BackendCL cae durante la venta. La venta termina, queda PENDING y
-  // NO se inventa un segundo saldo en usuariosApp.
-  it("assignPointsBySale encola PENDING sin tocar el saldo legacy si BackendCL no responde", async () => {
-    mockedAxios.post.mockRejectedValueOnce(new Error("ECONNRESET"));
-
-    const result = await assignPointsBySale({
-      memberId: "uid-2",
-      total: 90,
-      ventaId: "V-icee-1",
-      concesionId: "conc-1",
-      sucursalId: "suc-1",
-    });
-
-    expect(result).toMatchObject({
-      memberId: "uid-2",
-      montoVenta: 90,
-      puntosAsignados: 9,
-      status: "PENDING",
-      alreadyProcessed: false,
-      externalTransactionId: "pos-sale:V-icee-1",
-    });
-
-    expect(mockEnqueuePendingAccrual).toHaveBeenCalledWith(
-      expect.objectContaining({
-        memberId: "uid-2",
-        ventaId: "V-icee-1",
-        puntos: 9,
-        total: 90,
-        concesionId: "conc-1",
-        sucursalId: "suc-1",
-      }),
+  it("assignPointsBySale propaga el socio inexistente", async () => {
+    mockAccrueSalePoints.mockRejectedValueOnce(
+      new ApiError(404, "Socio no encontrado", true, "MEMBER_NOT_FOUND"),
     );
-
-    // Lo esencial del incidente: ni saldo legacy ni movimiento pos_acc_*.
-    expect(mockUserDocSet).not.toHaveBeenCalled();
-    expect(mockMovSet).not.toHaveBeenCalled();
-  });
-
-  it("assignPointsBySale no encola errores de negocio 4xx", async () => {
-    mockedAxios.post.mockRejectedValueOnce({
-      isAxiosError: true,
-      response: { status: 404, data: { message: "Socio no encontrado" } },
-    });
 
     await expect(
       assignPointsBySale({ memberId: "uid-2", total: 90, ventaId: "V-404" }),
     ).rejects.toMatchObject({ code: "MEMBER_NOT_FOUND" });
-
-    expect(mockEnqueuePendingAccrual).not.toHaveBeenCalled();
   });
 
-  // Caso 4: BackendCL se recupera y el pendiente se integra al ledger.
-  it("reprocessPendingAccruals integra el pendiente y lo marca COMPLETED", async () => {
+  it("createRedemptionHold reserva los puntos en el ledger", async () => {
+    mockHoldSalePoints.mockResolvedValueOnce({
+      redemptionId: "pos_V-500",
+      memberId: "uid-3",
+      puntosCanjeados: 500,
+      descripcion: "Canje POS V-500",
+      saldoAnterior: 920,
+      puntosActuales: 420,
+      alreadyHeld: false,
+    });
+
+    const hold = await createRedemptionHold({
+      memberId: "uid-3",
+      puntos: 500,
+      ventaId: "V-500",
+    });
+
+    expect(hold).toEqual({
+      redemptionId: "pos_V-500",
+      memberId: "uid-3",
+      puntosCanjeados: 500,
+      descripcion: "Canje POS V-500",
+    });
+    expect(mockHoldSalePoints).toHaveBeenCalledWith({
+      memberId: "uid-3",
+      ventaId: "V-500",
+      puntos: 500,
+      descripcion: "Canje POS V-500",
+    });
+  });
+
+  it("createRedemptionHold propaga saldo insuficiente como 400", async () => {
+    mockHoldSalePoints.mockRejectedValueOnce(
+      new ApiError(
+        400,
+        "Puntos insuficientes: el socio tiene 40 y se requieren 500",
+        true,
+        "INSUFFICIENT_POINTS",
+      ),
+    );
+
+    await expect(
+      createRedemptionHold({ memberId: "uid-3", puntos: 500, ventaId: "V-501" }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: "INSUFFICIENT_POINTS",
+    });
+  });
+
+  it("confirmRedemptionHold devuelve el monto y el saldo posterior", async () => {
+    mockConfirmSalePointsHold.mockResolvedValueOnce({
+      redemptionId: "pos_V-500",
+      memberId: "uid-3",
+      puntosCanjeados: 500,
+      puntosActuales: 420,
+      descripcion: "Canje POS V-500",
+      alreadyConfirmed: false,
+    });
+
+    const result = await confirmRedemptionHold({
+      redemptionId: "pos_V-500",
+      ventaId: "V-500",
+      memberId: "uid-3",
+      puntosCanjeados: 500,
+      descripcion: "Canje POS V-500",
+    });
+
+    expect(result.puntosCanjeados).toBe(500);
+    expect(result.montoPuntos).toBe(50);
+    expect(result.puntosActuales).toBe(420);
+  });
+
+  it("reprocessPendingAccruals acredita el pendiente y lo marca COMPLETED", async () => {
     mockListPendingAccruals.mockResolvedValueOnce([
       {
         id: "pos_acc_V-icee-1",
@@ -497,12 +319,14 @@ describe("loyalty-points.service", () => {
         attempts: 1,
       },
     ]);
-    mockedAxios.post.mockResolvedValueOnce({
-      data: {
-        success: true,
-        data: { montoVenta: 90, puntosAsignados: 9, puntosActuales: 367 },
-      },
-    } as never);
+    mockAccrueSalePoints.mockResolvedValueOnce({
+      memberId: "uid-2",
+      status: "APPLIED",
+      puntosAsignados: 9,
+      saldoAnterior: 358,
+      puntosActuales: 367,
+      movimientoId: "pos_acc_V-icee-1",
+    });
 
     const resumen = await reprocessPendingAccruals(10);
 
@@ -515,14 +339,9 @@ describe("loyalty-points.service", () => {
     expect(mockMarkPendingAccrualCompleted).toHaveBeenCalledWith(
       expect.objectContaining({ ventaId: "V-icee-1", alreadyProcessed: false }),
     );
-
-    const [, body] = mockedAxios.post.mock.calls[0];
-    expect(body).toMatchObject({
-      externalTransactionId: "pos-sale:V-icee-1",
-    });
   });
 
-  // Caso 5: reprocesar algo ya migrado acredita 0 puntos adicionales.
+  // Reprocesar algo ya acreditado no suma puntos adicionales.
   it("reprocessPendingAccruals cuenta como yaProcesadas lo que ya está en el ledger", async () => {
     mockListPendingAccruals.mockResolvedValueOnce([
       {
@@ -538,18 +357,14 @@ describe("loyalty-points.service", () => {
         attempts: 3,
       },
     ]);
-    mockedAxios.post.mockResolvedValueOnce({
-      data: {
-        success: true,
-        alreadyProcessed: true,
-        data: {
-          montoVenta: 90,
-          puntosAsignados: 9,
-          puntosActuales: 367,
-          alreadyProcessed: true,
-        },
-      },
-    } as never);
+    mockAccrueSalePoints.mockResolvedValueOnce({
+      memberId: "uid-2",
+      status: "ALREADY_PROCESSED",
+      puntosAsignados: 9,
+      saldoAnterior: 358,
+      puntosActuales: 367,
+      movimientoId: "pos_acc_V-dup",
+    });
 
     const resumen = await reprocessPendingAccruals(10);
 
@@ -564,7 +379,7 @@ describe("loyalty-points.service", () => {
     );
   });
 
-  it("reprocessPendingAccruals conserva el pendiente cuando BackendCL sigue caído", async () => {
+  it("reprocessPendingAccruals conserva el pendiente si el ledger falla", async () => {
     mockListPendingAccruals.mockResolvedValueOnce([
       {
         id: "pos_acc_V-down",
@@ -579,7 +394,7 @@ describe("loyalty-points.service", () => {
         attempts: 2,
       },
     ]);
-    mockedAxios.post.mockRejectedValueOnce(new Error("ETIMEDOUT"));
+    mockAccrueSalePoints.mockRejectedValueOnce(new Error("UNAVAILABLE"));
 
     const resumen = await reprocessPendingAccruals(10);
 
