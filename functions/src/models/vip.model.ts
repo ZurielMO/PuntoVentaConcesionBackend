@@ -168,6 +168,11 @@ export type VipOrder = {
   source: "VIP";
   channel: "VIP_DELIVERY";
   timestamps: Record<string, FirebaseFirestore.Timestamp | null>;
+  legalAcceptance?: {
+    version: string;
+    documents: string[];
+    acceptedAt: FirebaseFirestore.Timestamp;
+  };
   createdAt: FirebaseFirestore.Timestamp;
   updatedAt: FirebaseFirestore.Timestamp;
 };

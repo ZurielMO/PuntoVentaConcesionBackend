@@ -1,5 +1,6 @@
 import { VipOrderStatus } from "../src/models/vip.model";
 import {
+  VIP_LEGAL_DOCUMENT_VERSION,
   vipAdminListSchema,
   vipCancelSchema,
   vipCentralZoneUnlockSchema,
@@ -16,6 +17,7 @@ const checkout = () => ({
   delivery: { zona: "Poniente", palco: "124", nivel: "Piso 2" },
   items: [{ productId: "producto-real-1", quantity: 2, selectedOptions: [], extras: [] }],
   tip: 25,
+  legalAcceptance: { accepted: true, version: VIP_LEGAL_DOCUMENT_VERSION },
 });
 
 describe("VIP request schemas", () => {
@@ -49,6 +51,9 @@ describe("VIP request schemas", () => {
     ["invalid zona", (body: any) => { body.delivery.zona = "Norte"; }],
     ["free text zona", (body: any) => { body.delivery.zona = "Palcos VIP"; }],
     ["empty product id", (body: any) => { body.items[0].productId = ""; }],
+    ["missing legal acceptance", (body: any) => { delete body.legalAcceptance; }],
+    ["declined legal acceptance", (body: any) => { body.legalAcceptance.accepted = false; }],
+    ["stale legal version", (body: any) => { body.legalAcceptance.version = "2020-01-01"; }],
   ])("rejects %s", (_name, mutate) => {
     const body = checkout();
     mutate(body);

@@ -18,7 +18,12 @@ import {
   sha256,
   verifyTrackingToken,
 } from "../../config/vip.config";
-import type { VipAbandonCheckoutInput, VipCheckoutInput } from "../../middleware/validators/vip.validator";
+import {
+  VIP_LEGAL_DOCUMENT_VERSION,
+  VIP_LEGAL_DOCUMENTS,
+  type VipAbandonCheckoutInput,
+  type VipCheckoutInput,
+} from "../../middleware/validators/vip.validator";
 import {
   isVipPreorder,
   normalizeVipFloor,
@@ -836,6 +841,14 @@ export const createCheckout = async (
   if (!idempotencyKey || idempotencyKey.trim().length < 8 || idempotencyKey.length > 255) {
     throw new ApiError(400, "Idempotency-Key debe tener entre 8 y 255 caracteres.", true, "VIP_INVALID_IDEMPOTENCY_KEY");
   }
+  if (input.legalAcceptance?.accepted !== true || input.legalAcceptance.version !== VIP_LEGAL_DOCUMENT_VERSION) {
+    throw new ApiError(
+      400,
+      "Acepta los términos, el aviso de privacidad y la política de cookies para continuar.",
+      true,
+      "VIP_LEGAL_ACCEPTANCE_REQUIRED",
+    );
+  }
   const requestHash = sha256(JSON.stringify(input));
   const idemRef = col(COLLECTIONS.VIP_IDEMPOTENCY).doc(sha256(`checkout:${idempotencyKey}`));
   const priorIdempotency = await idemRef.get();
@@ -998,6 +1011,11 @@ export const createCheckout = async (
         deliveredAt: null,
         cancelledAt: null,
         refundedAt: null,
+      },
+      legalAcceptance: {
+        version: input.legalAcceptance.version,
+        documents: [...VIP_LEGAL_DOCUMENTS],
+        acceptedAt: now,
       },
       createdAt: now,
       updatedAt: now,

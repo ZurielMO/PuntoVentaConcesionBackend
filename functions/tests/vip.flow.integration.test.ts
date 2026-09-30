@@ -1,6 +1,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import Stripe from "stripe";
 import { VipOrderStatus } from "../src/models/vip.model";
+import { VIP_LEGAL_DOCUMENT_VERSION } from "../src/middleware/validators/vip.validator";
 import { sendVipOrderDeliveredEmail, sendVipOrderPaidEmail } from "../src/services/vip/vip-email.service";
 
 type Row = Record<string, any>;
@@ -146,6 +147,7 @@ const checkoutInput = () => ({
   delivery: { zona: "Poniente" as const, palco: "124", nivel: "Nivel 2" },
   items: [{ productId: "p1", quantity: 2, selectedOptions: ["large"], extras: ["cheese"] }],
   tip: 5,
+  legalAcceptance: { accepted: true as const, version: VIP_LEGAL_DOCUMENT_VERSION },
 });
 
 const seed = (overrides: { service?: Row; location?: Row; product?: Row; stock?: Row } = {}) => {
@@ -228,6 +230,10 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       zona: "Poniente",
       palco: "124",
       nivel: "Piso 2",
+    });
+    expect(mockRows.get(`vip_orders/${result.orderId}`)?.legalAcceptance).toMatchObject({
+      version: VIP_LEGAL_DOCUMENT_VERSION,
+      documents: ["terminos", "aviso-de-privacidad", "cookies"],
     });
     expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
     expect(mockSessionCreate).toHaveBeenCalledWith(
