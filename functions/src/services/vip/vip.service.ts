@@ -1134,10 +1134,10 @@ export const createCheckout = async (
   if (!order.payment.checkoutSessionId) {
     try {
       const session = await createStripeSession(order, idempotencyKey, resolveVipReturnUrls(returnOrigin));
-      await orderCol().doc(order.id).set({
+      await orderCol().doc(order.id).update({
         "payment.checkoutSessionId": session.id,
         updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
+      });
       order = await loadOrder(order.id);
       console.info("vip_checkout_created", {
         orderId: order.id,
@@ -1647,7 +1647,6 @@ export const processStripeWebhook = async (rawBody: Buffer, signature: string) =
     } else if (
       event.type === "checkout.session.async_payment_failed" ||
       event.type === "checkout.session.expired" ||
-      event.type === "payment_intent.payment_failed" ||
       event.type === "payment_intent.canceled"
     ) {
       const order = await loadOrder(orderId);
@@ -1659,6 +1658,20 @@ export const processStripeWebhook = async (rawBody: Buffer, signature: string) =
           event.type,
           { actorId: event.id, actorRole: "STRIPE" },
         );
+      }
+    } else if (event.type === "payment_intent.payment_failed") {
+      // Stripe Checkout mantiene la sesión abierta tras un intento fallido de tarjeta/Apple Pay
+      // para permitir que el invitado reintente con el mismo u otro método de pago. No se libera
+      // la reserva aquí; solo se libera si la sesión expira o el cliente cancela el checkout.
+      const order = await loadOrder(orderId);
+      if (order.payment.status !== VipPaymentStatus.PAID && !order.capacityReleased) {
+        await orderEventRef(orderId).set(eventPayload(
+          "PAYMENT_ATTEMPT_FAILED",
+          order.status,
+          order.status,
+          { actorId: event.id, actorRole: "STRIPE" },
+          { stripeEventType: event.type },
+        ));
       }
     } else {
       await eventRef.set({ status: "IGNORED", reason: "unsupported_event", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
@@ -2577,7 +2590,7 @@ async function performRefund(
       const latestOperation = await operationRef.get();
       if (latestOperation.data()?.status === "COMPLETED") return loadOrder(orderId);
       await operationRef.set({ status: "ERROR", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-      await orderRef.set({ "payment.status": VipPaymentStatus.PAID, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      await orderRef.update({ "payment.status": VipPaymentStatus.PAID, updatedAt: FieldValue.serverTimestamp() });
       throw new ApiError(502, "Stripe no pudo procesar el reembolso.", true, "VIP_REFUND_FAILED");
     }
   }

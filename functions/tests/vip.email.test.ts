@@ -137,7 +137,10 @@ describe("VIP Brevo emails", () => {
     const payload = mockedAxios.post.mock.calls[0][1] as { htmlContent: string; textContent: string };
     expect(payload.htmlContent).toContain("Guía de pedido");
     expect(payload.htmlContent).toContain("7KQ4-M2XD");
+    expect(payload.htmlContent).toContain('href="https://foodmarket.clubleon.mx/servicio-palcos/guia/?codigo=7KQ4-M2XD"');
+    expect(payload.htmlContent).not.toContain("/servicio-palcos/inicio/");
     expect(payload.textContent).toContain("Guía de pedido: 7KQ4-M2XD");
+    expect(payload.textContent).toContain("https://foodmarket.clubleon.mx/servicio-palcos/guia/?codigo=7KQ4-M2XD");
   });
 
   it("sends a preorder confirmation with match, delivery window and guide", async () => {

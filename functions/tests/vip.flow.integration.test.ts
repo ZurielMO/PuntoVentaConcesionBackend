@@ -726,7 +726,7 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
     });
   });
 
-  it("marks payment failed from payment_intent.payment_failed and restores stock", async () => {
+  it("keeps reservation active on payment_intent.payment_failed so a retry on the open checkout session succeeds", async () => {
     const service = await import("../src/services/vip/vip.service");
     const checkout = await service.createCheckout(checkoutInput(), "checkout-pi-failed");
     const payload = JSON.stringify({
@@ -743,6 +743,35 @@ describe("VIP checkout/payment/refund flow with in-memory Firestore and Stripe",
       pending_webhooks: 1,
       request: null,
       type: "payment_intent.payment_failed",
+    });
+    await service.processStripeWebhook(Buffer.from(payload), signEvent(payload));
+    expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.status).toBe("PENDING_PAYMENT");
+    expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.payment.status).toBe("PENDING");
+    expect(mockRows.get("inventarios/inv-1/productos/p1")?.cantidad_final).toBe(3);
+
+    await confirmPaid(service, checkout.orderId, "evt_paid_after_retry");
+    expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.status).toBe("RECEIVED");
+    expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.payment.status).toBe("PAID");
+    expect(mockRefundCreate).not.toHaveBeenCalled();
+  });
+
+  it("marks payment failed from payment_intent.canceled and restores stock", async () => {
+    const service = await import("../src/services/vip/vip.service");
+    const checkout = await service.createCheckout(checkoutInput(), "checkout-pi-canceled");
+    const payload = JSON.stringify({
+      id: "evt_pi_canceled",
+      object: "event",
+      api_version: "2025-02-24.acacia",
+      created: 1,
+      data: { object: {
+        id: "pi_canceled",
+        object: "payment_intent",
+        metadata: { orderId: checkout.orderId },
+      } },
+      livemode: false,
+      pending_webhooks: 1,
+      request: null,
+      type: "payment_intent.canceled",
     });
     await service.processStripeWebhook(Buffer.from(payload), signEvent(payload));
     expect(mockRows.get(`vip_orders/${checkout.orderId}`)?.status).toBe("PAYMENT_FAILED");

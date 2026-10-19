@@ -1,7 +1,9 @@
 import { sendBrevoEmail } from "../../clients/brevo.client";
-import { resolveVipFrontendOrigin } from "../../config/vip.config";
 import { isVipPreorder, type VipOrder, type VipOrderItemSnapshot, type VipPreorderInfo } from "../../models/vip.model";
 import { formatGuideCode, formatMatchDateLong, VIP_TIME_ZONE } from "./vip-preorder.utils";
+
+/** Estatus en vivo del pedido. El código de guía abre la consulta sin pasar por el inicio. */
+const VIP_GUIDE_STATUS_URL = "https://foodmarket.clubleon.mx/servicio-palcos/guia/";
 
 const CLUB_LEON_LOGO_URL =
   "https://storage.googleapis.com/app-oficial-leon.firebasestorage.app/galeria/e5a06d0a-9ca3-4864-b481-be2e7b0fa23a.png";
@@ -119,13 +121,8 @@ const notifyEmailFailure = (context: string, error: unknown): void => {
   console.error(`[Brevo] ${context} threw`, error instanceof Error ? error.message : error);
 };
 
-const guideLookupUrl = (guide: string): string | null => {
-  try {
-    return `${resolveVipFrontendOrigin()}/servicio-palcos/guia/?codigo=${encodeURIComponent(guide)}`;
-  } catch {
-    return null;
-  }
-};
+const guideLookupUrl = (guide: string): string =>
+  `${VIP_GUIDE_STATUS_URL}?codigo=${encodeURIComponent(guide)}`;
 
 const guideBlockHtml = (order: VipOrder): string => {
   const guide = formatGuideCode(order.guideCode);
