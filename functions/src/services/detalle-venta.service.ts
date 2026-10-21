@@ -894,6 +894,45 @@ export const createDetalleVenta = async (params: {
   return getDetalleVentaById(comprobanteRef.id);
 };
 
+const cleanVipLabel = (value: unknown, max = 40): string | null => {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return text.slice(0, max);
+};
+
+const isSafeDocId = (value: string): boolean =>
+  value.length > 0 && value.length <= 200 && !value.includes("/");
+
+/** Completa palco y zona desde la orden VIP cuando el comprobante aún no los trae. */
+const withVipUbicacion = async (
+  data: Record<string, unknown> & { id: string },
+): Promise<Record<string, unknown> & { id: string }> => {
+  if (cleanVipLabel(data.vipPalco) || !isSafeDocId(String(data.vipOrderId ?? "").trim())) {
+    return data;
+  }
+  try {
+    const orderSnap = await firestorePos
+      .collection(COLLECTIONS.VIP_ORDERS)
+      .doc(String(data.vipOrderId).trim())
+      .get();
+    const delivery = orderSnap.data()?.delivery as
+      | { palco?: unknown; zona?: unknown }
+      | undefined;
+    if (!delivery) return data;
+    return {
+      ...data,
+      vipPalco: cleanVipLabel(delivery.palco),
+      vipZona: cleanVipLabel(delivery.zona),
+    };
+  } catch (error) {
+    console.warn("detalle_venta_vip_ubicacion_failed", {
+      ventaId: data.id,
+      message: error instanceof Error ? error.message : "unknown",
+    });
+    return data;
+  }
+};
+
 export const getDetalleVentaById = async (id: string) => {
   const doc = await col().doc(id).get();
   if (!doc.exists) {
@@ -903,7 +942,11 @@ export const getDetalleVentaById = async (id: string) => {
     .doc(id)
     .collection(SUBCOLLECTIONS.DETALLE)
     .get();
-  return { ...toData(doc), detalle: detalleSnap.docs.map(toData) };
+  const data = await withVipUbicacion({
+    ...toData(doc),
+    detalle: detalleSnap.docs.map(toData),
+  });
+  return data;
 };
 
 /** Lookup by business ventaId (e.g. V-123), not Firestore doc id. */

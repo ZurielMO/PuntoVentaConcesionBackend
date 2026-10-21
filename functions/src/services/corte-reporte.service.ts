@@ -40,6 +40,8 @@ export interface ReporteProductoRow {
   ventasTotales: number;
   /** Parte de ventasTotales originada en VIP / VIP Stripe (palcos). */
   ventaPalcos: number;
+  /** Unidades pagadas de palcos. El resto de unidades pagadas es POS. */
+  cantidadPalcos: number;
   /** Precio de lista actual del catálogo */
   precioActual: number;
   /** Descuento unitario abonado (precio lista − precio abonado efectivo) */
@@ -175,6 +177,7 @@ const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
   puntosCanjeados: 0,
   ventasTotales: 0,
   ventaPalcos: 0,
+  cantidadPalcos: 0,
 });
 
 const isCorteCerrado = (corte: Record<string, unknown>) =>
@@ -284,6 +287,7 @@ const mergeProductoReporteMaps = (
       puntosCanjeados: roundMoney(prev.puntosCanjeados + row.puntosCanjeados),
       ventasTotales: roundMoney(prev.ventasTotales + row.ventasTotales),
       ventaPalcos: roundMoney(prev.ventaPalcos + row.ventaPalcos),
+      cantidadPalcos: prev.cantidadPalcos + row.cantidadPalcos,
     });
   }
 
@@ -335,6 +339,7 @@ const buildProductosReporte = async (
       puntosCanjeados: number;
       ventasTotales: number;
       ventaPalcos: number;
+      cantidadPalcos: number;
     }
   >,
 ): Promise<ReporteProductoRow[]> => {
@@ -374,6 +379,7 @@ const buildProductosReporte = async (
       puntosCanjeados: ventas?.puntosCanjeados ?? 0,
       ventasTotales: ventas?.ventasTotales ?? 0,
       ventaPalcos: ventas?.ventaPalcos ?? 0,
+      cantidadPalcos: ventas?.cantidadPalcos ?? 0,
       precioActual,
       descuentoAbonado,
     });
@@ -532,6 +538,7 @@ const buildReporteForConcesion = async (
       puntosCanjeados: p.puntosCanjeados,
       ventasTotales: p.ventasTotales,
       ventaPalcos: p.ventaPalcos,
+      cantidadPalcos: p.cantidadPalcos,
     })),
   );
 

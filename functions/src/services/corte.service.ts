@@ -530,6 +530,8 @@ export interface ProductoReporteAgg {
   ventasTotales: number;
   /** Parte de ventasTotales originada en VIP / VIP Stripe (palcos). */
   ventaPalcos: number;
+  /** Unidades pagadas de palcos. Cortesías (precio 0) no cuentan. */
+  cantidadPalcos: number;
 }
 
 const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
@@ -541,6 +543,7 @@ const emptyProductoReporteAgg = (): ProductoReporteAgg => ({
   puntosCanjeados: 0,
   ventasTotales: 0,
   ventaPalcos: 0,
+  cantidadPalcos: 0,
 });
 
 /** @internal exported for unit tests */
@@ -589,6 +592,7 @@ export const aggregateProductoReporteFromVentas = (
       prev.ventasTotales = roundMoney(prev.ventasTotales + subtotal);
       if (esPalcos) {
         prev.ventaPalcos = roundMoney(prev.ventaPalcos + subtotal);
+        if (precio > 0) prev.cantidadPalcos += cantidad;
       }
 
       if (montoPuntos > 0 && ventaTotal > 0) {
@@ -613,6 +617,7 @@ export interface ReporteProductoTotalesRow {
   puntosCanjeados: number;
   ventasTotales: number;
   ventaPalcos: number;
+  cantidadPalcos: number;
   dineroReal: number;
 }
 
@@ -630,6 +635,7 @@ export const buildReporteProductoTotales = (
       puntosCanjeados: roundMoney(acc.puntosCanjeados + row.puntosCanjeados),
       ventasTotales: roundMoney(acc.ventasTotales + row.ventasTotales),
       ventaPalcos: roundMoney(acc.ventaPalcos + row.ventaPalcos),
+      cantidadPalcos: acc.cantidadPalcos + row.cantidadPalcos,
     }),
     emptyProductoReporteAgg(),
   );

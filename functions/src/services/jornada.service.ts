@@ -156,7 +156,65 @@ export interface JornadaDisponible {
   numero: number;
   rama: JornadaRama;
   etiqueta: string;
+  equipoLocal?: string;
+  equipoVisitante?: string;
 }
+
+const TORNEO_PARTIDOS_PATH =
+  process.env.CORTESIAS_TORNEO_RTDB_PATH?.trim() ||
+  "torneo/liga mx/2026/apertura/partidos";
+
+const teamName = (value: unknown): string | undefined => {
+  const text = String(value ?? "").trim().slice(0, 80);
+  return text || undefined;
+};
+
+type EquiposJornada = { equipoLocal?: string; equipoVisitante?: string };
+
+/**
+ * Equipos de cada jornada. El calendario de liga aporta varonil; los nodos
+ * de jornada activa (incluye partidos ya cerrados) pisan por rama.
+ */
+const loadEquiposPorJornada = async (): Promise<Map<string, EquiposJornada>> => {
+  const map = new Map<string, EquiposJornada>();
+  try {
+    const db = getRealtimeDbAppOficial2();
+    const partidosSnap = await db.ref(TORNEO_PARTIDOS_PATH).get();
+    if (partidosSnap.exists()) {
+      const value = partidosSnap.val() as Record<string, JornadaActivaValue>;
+      for (const raw of Object.values(value ?? {})) {
+        if (!raw || typeof raw !== "object" || raw.jornada == null || !raw.fecha) continue;
+        const local = teamName(raw.equipo_local);
+        const visitante = teamName(raw.equipo_visitante);
+        if (!local && !visitante) continue;
+        const fecha = normalizeFechaJornada(String(raw.fecha));
+        const id = buildJornadaId(fecha, Number(raw.jornada), "varonil");
+        map.set(id, { equipoLocal: local, equipoVisitante: visitante });
+      }
+    }
+
+    for (const rama of ["varonil", "femenil"] as const) {
+      const path = rama === "varonil" ? JORNADA_ACTIVA_PATH : JORNADA_ACTIVA_FEMENIL_PATH;
+      const snap = await db.ref(path).get();
+      if (!snap.exists()) continue;
+      const value = snap.val() as Record<string, JornadaActivaValue>;
+      for (const raw of Object.values(value ?? {})) {
+        if (!raw || typeof raw !== "object" || raw.jornada == null || !raw.fecha) continue;
+        const local = teamName(raw.equipo_local);
+        const visitante = teamName(raw.equipo_visitante);
+        if (!local && !visitante) continue;
+        const fecha = normalizeFechaJornada(String(raw.fecha));
+        const id = buildJornadaId(fecha, Number(raw.jornada), rama);
+        map.set(id, { equipoLocal: local, equipoVisitante: visitante });
+      }
+    }
+  } catch (error) {
+    console.warn("jornada_equipos_unavailable", {
+      message: error instanceof Error ? error.message : "unknown error",
+    });
+  }
+  return map;
+};
 
 export const formatEtiquetaJornada = (
   fecha: string,
@@ -328,14 +386,21 @@ export const listJornadasDisponibles = async (filters?: {
     }
   }
 
+  const equipos = await loadEquiposPorJornada();
+
   return Array.from(byJornada.entries())
-    .map(([jornadaId, { fecha, numero, rama }]) => ({
-      jornadaId,
-      fecha,
-      numero,
-      rama,
-      etiqueta: formatEtiquetaJornada(fecha, numero, rama),
-    }))
+    .map(([jornadaId, { fecha, numero, rama }]) => {
+      const eq = equipos.get(jornadaId);
+      return {
+        jornadaId,
+        fecha,
+        numero,
+        rama,
+        etiqueta: formatEtiquetaJornada(fecha, numero, rama),
+        ...(eq?.equipoLocal ? { equipoLocal: eq.equipoLocal } : {}),
+        ...(eq?.equipoVisitante ? { equipoVisitante: eq.equipoVisitante } : {}),
+      };
+    })
     .sort(
       (a, b) =>
         b.fecha.localeCompare(a.fecha) ||

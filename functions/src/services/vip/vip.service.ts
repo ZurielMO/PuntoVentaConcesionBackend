@@ -1440,6 +1440,8 @@ const finalizePaidOrder = async (
         cajaNombre: "VIP",
         idUser: null,
         cajeroNombre: "VIP Stripe",
+        vipPalco: order.delivery?.palco || null,
+        vipZona: order.delivery?.zona || null,
         lineasVenta: order.items
           .filter((row) => fulfillment.itemIds.includes(row.id))
           .map((item) => ({

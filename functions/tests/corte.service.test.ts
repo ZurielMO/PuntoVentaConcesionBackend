@@ -590,10 +590,12 @@ describe("aggregateProductoReporteFromVentas", () => {
       ventasRegular: 650,
       ventasTotales: 650,
       ventaPalcos: 390,
+      cantidadPalcos: 3,
     });
 
     const totales = buildReporteProductoTotales([vaso!]);
     expect(totales.ventaPalcos).toBe(390);
+    expect(totales.cantidadPalcos).toBe(3);
     expect(totales.ventasTotales).toBe(650);
   });
 });
