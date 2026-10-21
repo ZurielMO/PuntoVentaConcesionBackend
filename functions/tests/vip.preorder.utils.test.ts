@@ -10,7 +10,7 @@ import {
   parseKickoffMinutes,
   stadiumLocalToMillis,
 } from "../src/services/vip/vip-preorder.utils";
-import { vipCheckoutSchema } from "../src/middleware/validators/vip.validator";
+import { vipCheckoutSchema, VIP_LEGAL_DOCUMENT_VERSION } from "../src/middleware/validators/vip.validator";
 
 describe("VIP preorder rules", () => {
   it.each([
@@ -95,6 +95,7 @@ describe("VIP preorder rules", () => {
       customer: { name: "Cliente", email: "c@example.com", phone: "4771234567" },
       delivery: { zona: "Poniente", palco: "12", nivel: "2" },
       items: [{ productId: "p1", quantity: 1 }],
+      legalAcceptance: { accepted: true, version: VIP_LEGAL_DOCUMENT_VERSION },
     };
     expect(vipCheckoutSchema.safeParse({ ...base, preorder: { matchId: "m1", windowStart: "19:00" } }).success).toBe(true);
     expect(vipCheckoutSchema.safeParse({ ...base, preorder: { matchId: "m1", windowStart: "7pm" } }).success).toBe(false);

@@ -3,6 +3,10 @@ import { normalizeVipFloor, VIP_STADIUM_ZONES, VipOrderStatus } from "../../mode
 
 const id = z.string().trim().min(1).max(160);
 
+/** Mantener igual que VIP_LEGAL_DOCUMENT_VERSION en el frontend (`src/lib/vip/legal-config.ts`). */
+export const VIP_LEGAL_DOCUMENT_VERSION = "2026-09-30";
+export const VIP_LEGAL_DOCUMENTS = ["terminos", "aviso-de-privacidad", "cookies"] as const;
+
 const mxPhone = z.string().trim().min(10).max(20).refine((value) => {
   const digits = value.replace(/\D/g, "");
   return digits.length === 10 || (digits.length === 12 && digits.startsWith("52"));
@@ -46,6 +50,10 @@ export const vipCheckoutSchema = z.object({
     matchId: id,
     windowStart: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Horario inválido (HH:mm)."),
   }).strict().optional(),
+  legalAcceptance: z.object({
+    accepted: z.literal(true),
+    version: z.string().trim().refine((value) => value === VIP_LEGAL_DOCUMENT_VERSION, "Versión legal no vigente"),
+  }).strict(),
 }).strict();
 
 export const vipConfirmSessionSchema = z.object({

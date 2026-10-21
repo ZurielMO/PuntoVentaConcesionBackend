@@ -18,7 +18,12 @@ import {
   sha256,
   verifyTrackingToken,
 } from "../../config/vip.config";
-import type { VipAbandonCheckoutInput, VipCheckoutInput } from "../../middleware/validators/vip.validator";
+import {
+  VIP_LEGAL_DOCUMENT_VERSION,
+  VIP_LEGAL_DOCUMENTS,
+  type VipAbandonCheckoutInput,
+  type VipCheckoutInput,
+} from "../../middleware/validators/vip.validator";
 import {
   isVipPreorder,
   normalizeVipFloor,
@@ -836,6 +841,14 @@ export const createCheckout = async (
   if (!idempotencyKey || idempotencyKey.trim().length < 8 || idempotencyKey.length > 255) {
     throw new ApiError(400, "Idempotency-Key debe tener entre 8 y 255 caracteres.", true, "VIP_INVALID_IDEMPOTENCY_KEY");
   }
+  if (input.legalAcceptance?.accepted !== true || input.legalAcceptance.version !== VIP_LEGAL_DOCUMENT_VERSION) {
+    throw new ApiError(
+      400,
+      "Acepta los términos, el aviso de privacidad y la política de cookies para continuar.",
+      true,
+      "VIP_LEGAL_ACCEPTANCE_REQUIRED",
+    );
+  }
   const requestHash = sha256(JSON.stringify(input));
   const idemRef = col(COLLECTIONS.VIP_IDEMPOTENCY).doc(sha256(`checkout:${idempotencyKey}`));
   const priorIdempotency = await idemRef.get();
@@ -999,6 +1012,11 @@ export const createCheckout = async (
         cancelledAt: null,
         refundedAt: null,
       },
+      legalAcceptance: {
+        version: input.legalAcceptance.version,
+        documents: [...VIP_LEGAL_DOCUMENTS],
+        acceptedAt: now,
+      },
       createdAt: now,
       updatedAt: now,
     };
@@ -1116,10 +1134,10 @@ export const createCheckout = async (
   if (!order.payment.checkoutSessionId) {
     try {
       const session = await createStripeSession(order, idempotencyKey, resolveVipReturnUrls(returnOrigin));
-      await orderCol().doc(order.id).set({
+      await orderCol().doc(order.id).update({
         "payment.checkoutSessionId": session.id,
         updatedAt: FieldValue.serverTimestamp(),
-      }, { merge: true });
+      });
       order = await loadOrder(order.id);
       console.info("vip_checkout_created", {
         orderId: order.id,
@@ -1631,7 +1649,6 @@ export const processStripeWebhook = async (rawBody: Buffer, signature: string) =
     } else if (
       event.type === "checkout.session.async_payment_failed" ||
       event.type === "checkout.session.expired" ||
-      event.type === "payment_intent.payment_failed" ||
       event.type === "payment_intent.canceled"
     ) {
       const order = await loadOrder(orderId);
@@ -1643,6 +1660,20 @@ export const processStripeWebhook = async (rawBody: Buffer, signature: string) =
           event.type,
           { actorId: event.id, actorRole: "STRIPE" },
         );
+      }
+    } else if (event.type === "payment_intent.payment_failed") {
+      // Stripe Checkout mantiene la sesión abierta tras un intento fallido de tarjeta/Apple Pay
+      // para permitir que el invitado reintente con el mismo u otro método de pago. No se libera
+      // la reserva aquí; solo se libera si la sesión expira o el cliente cancela el checkout.
+      const order = await loadOrder(orderId);
+      if (order.payment.status !== VipPaymentStatus.PAID && !order.capacityReleased) {
+        await orderEventRef(orderId).set(eventPayload(
+          "PAYMENT_ATTEMPT_FAILED",
+          order.status,
+          order.status,
+          { actorId: event.id, actorRole: "STRIPE" },
+          { stripeEventType: event.type },
+        ));
       }
     } else {
       await eventRef.set({ status: "IGNORED", reason: "unsupported_event", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
@@ -2561,7 +2592,7 @@ async function performRefund(
       const latestOperation = await operationRef.get();
       if (latestOperation.data()?.status === "COMPLETED") return loadOrder(orderId);
       await operationRef.set({ status: "ERROR", updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-      await orderRef.set({ "payment.status": VipPaymentStatus.PAID, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      await orderRef.update({ "payment.status": VipPaymentStatus.PAID, updatedAt: FieldValue.serverTimestamp() });
       throw new ApiError(502, "Stripe no pudo procesar el reembolso.", true, "VIP_REFUND_FAILED");
     }
   }
