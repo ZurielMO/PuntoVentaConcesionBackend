@@ -60,6 +60,10 @@ function getOrCreateApp(): admin.app.App | null {
     return existing;
   }
 
+  if (process.env.FIREBASE_DATABASE_EMULATOR_HOST?.trim()) {
+    return admin.initializeApp({ databaseURL: REALTIME_DB_URL }, APP_NAME);
+  }
+
   const serviceAccount = loadServiceAccount();
   if (!serviceAccount) {
     return null;

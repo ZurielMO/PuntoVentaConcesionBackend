@@ -21,6 +21,15 @@ export const createDetalleVenta = asyncHandler(
       puntosUsados: req.body.puntosUsados,
       memberId: req.body.memberId,
       abonado: req.body.abonado,
+      // La PDA nunca elige caja por el cuerpo: viene de su token.
+      cajaId: req.pda ? undefined : req.body.cajaId,
+      authorizedCaja: req.pda?.cajaId
+        ? {
+            cajaId: req.pda.cajaId,
+            deviceId: req.pda.deviceId,
+            cajeroNombre: String(req.user.nombre ?? "PDA"),
+          }
+        : undefined,
     });
     res.status(201).json({ success: true, data, message: "Comprobante creado" });
   },

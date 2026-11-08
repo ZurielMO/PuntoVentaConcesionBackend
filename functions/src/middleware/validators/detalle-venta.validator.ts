@@ -31,26 +31,43 @@ const abonadoVentaSchema = z
   })
   .strict();
 
+const ventaFields = {
+  productos: z.array(detalleProductoSchema).min(1),
+  metodoPago: metodoPagoSchema.optional().default("efectivo"),
+  puntosUsados: z.number().int().nonnegative().optional().default(0),
+  memberId: z.string().trim().min(1).optional(),
+  abonado: abonadoVentaSchema.optional(),
+};
+
+const requirePointsMember = (
+  data: { puntosUsados: number; metodoPago: string; memberId?: string },
+  ctx: z.RefinementCtx,
+) => {
+  const usesPoints =
+    data.puntosUsados > 0 || String(data.metodoPago).startsWith("puntos");
+  if (usesPoints && !data.memberId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "memberId es requerido para pagar con puntos",
+      path: ["memberId"],
+    });
+  }
+};
+
+/** Ventas con sesión de usuario: la caja se indica y el servidor la valida. */
 export const createDetalleVentaSchema = z
   .object({
-    productos: z.array(detalleProductoSchema).min(1),
-    metodoPago: metodoPagoSchema.optional().default("efectivo"),
-    puntosUsados: z.number().int().nonnegative().optional().default(0),
-    memberId: z.string().trim().min(1).optional(),
-    abonado: abonadoVentaSchema.optional(),
+    ...ventaFields,
+    cajaId: z.string().trim().min(1).max(200).regex(/^[^/]+$/).optional(),
   })
   .strict()
-  .superRefine((data, ctx) => {
-    const usesPoints =
-      data.puntosUsados > 0 || String(data.metodoPago).startsWith("puntos");
-    if (usesPoints && !data.memberId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "memberId es requerido para pagar con puntos",
-        path: ["memberId"],
-      });
-    }
-  });
+  .superRefine(requirePointsMember);
+
+/** Ventas de PDA: la caja sale de su token, así que el cuerpo no la acepta. */
+export const createPdaVentaSchema = z
+  .object(ventaFields)
+  .strict()
+  .superRefine(requirePointsMember);
 
 export const updateDetalleVentaSchema = z
   .object({

@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS, SUBCOLLECTIONS } from "../config/firestore.constants";
@@ -9,9 +10,9 @@ import {
   parseJornadaId,
   ramaFromId,
   ramaFromInventario,
-  resolveCajaActivaParaVendedor,
 } from "./asignacion-caja.service";
 import { getUserById } from "./user.service";
+import { assertCajaBelongsToSucursal } from "./sucursal.service";
 import { getComboById } from "./combo.service";
 import {
   calcularCanjePuntos,
@@ -436,10 +437,20 @@ const resolveLineas = async (
   return lineas;
 };
 
+/** Caja ya autorizada por el servidor (PDA): sustituye la búsqueda por usuario. */
+export type AuthorizedVentaCaja = {
+  cajaId: string;
+  deviceId: string;
+  cajeroNombre: string;
+};
+
 const resolveCajaForVenta = async (params: {
   idUser: string;
   sucursalId: string;
   inventarioId: string;
+  concesionId: string;
+  cajaId?: string;
+  authorizedCaja?: AuthorizedVentaCaja;
 }) => {
   const invDoc = await inventariosCol().doc(params.inventarioId).get();
   if (!invDoc.exists) {
@@ -455,33 +466,51 @@ const resolveCajaForVenta = async (params: {
     ramaFromInventario(inv, invDoc.id),
   );
 
-  let fallbackCajaId: string | null = null;
-  let cajeroNombre = "Cajero";
-  try {
-    const profile = await getUserById(params.idUser);
-    fallbackCajaId = (profile.cajaId as string | null | undefined) ?? null;
-    cajeroNombre = (profile.nombre as string) ?? cajeroNombre;
-  } catch {
-    // Perfil opcional si uid no está en users
-  }
-
-  const caja = await resolveCajaActivaParaVendedor({
-    vendedorUid: params.idUser,
-    jornadaId,
-    sucursalId: params.sucursalId,
-    fallbackCajaId,
-  });
-
-  if (!caja) {
+  // SuperAdmin no pasa por el middleware que compara estos datos: se validan aquí.
+  if (inv.sucursal_id && inv.sucursal_id !== params.sucursalId) {
     throw new ApiError(
       400,
-      "Debes tener una caja asignada para registrar ventas",
+      "El inventario no pertenece a la sucursal indicada",
+      true,
+      "BAD_REQUEST",
+    );
+  }
+  if (inv.concesion_id && inv.concesion_id !== params.concesionId) {
+    throw new ApiError(
+      400,
+      "Los parámetros de la venta no coinciden con el inventario",
+      true,
+      "BAD_REQUEST",
+    );
+  }
+
+  // La caja sale del contexto de la operación, nunca del perfil del usuario.
+  const cajaId = params.authorizedCaja?.cajaId ?? params.cajaId;
+  if (!cajaId) {
+    throw new ApiError(
+      400,
+      "Selecciona una caja para registrar la venta",
       true,
       "MISSING_CAJA",
     );
   }
+  const caja = await assertCajaBelongsToSucursal(params.sucursalId, cajaId);
 
-  return { jornadaId, caja, cajeroNombre };
+  let cajeroNombre = params.authorizedCaja?.cajeroNombre ?? "Cajero";
+  if (!params.authorizedCaja) {
+    try {
+      const profile = await getUserById(params.idUser);
+      cajeroNombre = (profile.nombre as string) ?? cajeroNombre;
+    } catch {
+      // El nombre es informativo: no impide registrar la venta.
+    }
+  }
+
+  return {
+    jornadaId,
+    caja: { cajaId: caja.id, cajaNombre: String(caja.nombre ?? caja.id) },
+    cajeroNombre,
+  };
 };
 
 export type MetodoPago =
@@ -615,15 +644,32 @@ export const createDetalleVenta = async (params: {
   puntosUsados?: number;
   memberId?: string;
   abonado?: AbonadoVentaInput;
+  /** Caja elegida por un usuario con sesión; se valida contra la sucursal. */
+  cajaId?: string;
+  authorizedCaja?: AuthorizedVentaCaja;
 }) => {
   if (!params.idUser) {
     throw new ApiError(401, "No autenticado", true, "UNAUTHENTICATED");
+  }
+
+  // PDA: id derivado de dispositivo + ventaId, para que un reintento tras perder
+  // la respuesta devuelva la misma venta en vez de registrarla y descontar otra vez.
+  const idempotentId = params.authorizedCaja
+    ? `pda_${createHash("sha256")
+        .update(`${params.authorizedCaja.deviceId}:${params.ventaId}`)
+        .digest("hex")}`
+    : null;
+  if (idempotentId && (await col().doc(idempotentId).get()).exists) {
+    return getDetalleVentaById(idempotentId);
   }
 
   const { jornadaId, caja, cajeroNombre } = await resolveCajaForVenta({
     idUser: params.idUser,
     sucursalId: params.sucursalId,
     inventarioId: params.inventarioId,
+    concesionId: params.concesionId,
+    cajaId: params.cajaId,
+    authorizedCaja: params.authorizedCaja,
   });
 
   await assertVentaPermitidaConCorte({
@@ -689,8 +735,9 @@ export const createDetalleVenta = async (params: {
     montoPuntos: pagoPuntos.montoPuntos,
   });
 
-  const comprobanteRef = col().doc();
+  const comprobanteRef = idempotentId ? col().doc(idempotentId) : col().doc();
   const inventarioRef = inventariosCol().doc(params.inventarioId);
+  const duplicateVenta = new Error("PDA_VENTA_DUPLICADA");
 
   let redemptionHold:
     | {
@@ -711,6 +758,10 @@ export const createDetalleVenta = async (params: {
 
   try {
     await firestorePos.runTransaction(async (tx) => {
+      if (idempotentId && (await tx.get(comprobanteRef)).exists) {
+        throw duplicateVenta;
+      }
+
       const invDoc = await tx.get(inventarioRef);
       if (!invDoc.exists || invDoc.data()?.activo === false) {
         throw new ApiError(404, "Inventario no encontrado", true, "NOT_FOUND");
@@ -829,6 +880,9 @@ export const createDetalleVenta = async (params: {
         cajaNombre: caja.cajaNombre,
         idUser: params.idUser ?? null,
         cajeroNombre,
+        ...(params.authorizedCaja
+          ? { origen: "PDA", dispositivoId: params.authorizedCaja.deviceId }
+          : {}),
         metodoPago,
         total,
         lineasVenta,
@@ -855,6 +909,9 @@ export const createDetalleVenta = async (params: {
         ventaId: params.ventaId,
         memberId: redemptionHold.memberId,
       });
+    }
+    if (error === duplicateVenta) {
+      return getDetalleVentaById(comprobanteRef.id);
     }
     unwrapTransactionError(error);
   }
@@ -1134,4 +1191,3 @@ export const updateDetalleVenta = async (
   return getDetalleVentaById(id);
 };
 
-export const resolveCajaContextForUser = resolveCajaForVenta;

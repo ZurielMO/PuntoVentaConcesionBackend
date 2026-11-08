@@ -16,6 +16,8 @@ export const COLLECTIONS = {
   COMPROBANTES_VENTA: "comprobantes_venta",
   ASIGNACIONES_CAJAS_JORNADA: "asignaciones_cajas_jornada",
   COMBOS: "combos",
+  /** Dispositivos PDA registrados: estado y hash de su secreto. */
+  PDA_DEVICES: "pda_devices",
   DESCUENTOS: "descuentos",
   ABONADO_BENEFICIOS_CONSUMIDOS: "abonado_beneficios_consumidos",
   CINEPOLIS_ASIGNACIONES: "cinepolis_asignaciones",

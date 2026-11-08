@@ -23,6 +23,7 @@ import trabajadoresClubRoutes from "./trabajadores-club.routes";
 import loyaltyRoutes from "./loyalty.routes";
 import vipRoutes from "./vip.routes";
 import escudosRoutes from "./escudos.routes";
+import pdaRoutes from "./pda.routes";
 import { getBuildInfo } from "../config/build-info";
 
 const router = Router();
@@ -62,5 +63,6 @@ router.use("/trabajadores-club", trabajadoresClubRoutes);
 router.use("/loyalty", loyaltyRoutes);
 router.use("/vip", vipRoutes);
 router.use("/escudos", escudosRoutes);
+router.use("/pda", pdaRoutes);
 
 export default router;

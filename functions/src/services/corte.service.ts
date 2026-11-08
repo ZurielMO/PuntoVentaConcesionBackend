@@ -6,6 +6,7 @@ import * as detalleVentaService from "./detalle-venta.service";
 import * as productService from "./product.service";
 import * as comboService from "./combo.service";
 import * as inventarioService from "./inventario.service";
+import * as sucursalService from "./sucursal.service";
 import {
   alignJornadaIdWithInventario,
   buildJornadaId,
@@ -1219,14 +1220,42 @@ export const cerrarCorte = async (
   if (!filters.cajaId) {
     throw new ApiError(
       400,
-      "Debes tener una caja asignada para cerrar el corte",
+      "Selecciona la caja para cerrar el corte",
       true,
       "MISSING_CAJA",
     );
   }
 
+  // La caja llega indicada: debe existir en una sucursal de esta concesión. Se
+  // admite una caja ya desactivada para poder cerrar lo que tenga pendiente.
+  const sucursalId = filters.sucursalId ?? context.sucursalId ?? null;
+  if (!sucursalId) {
+    throw new ApiError(
+      400,
+      "Selecciona la sucursal para cerrar el corte",
+      true,
+      "MISSING_SUCURSAL",
+    );
+  }
+  const [sucursal, caja] = await Promise.all([
+    sucursalService.getSucursalById(sucursalId),
+    sucursalService.getCajaById(sucursalId, filters.cajaId),
+  ]);
+  if (
+    (sucursal as unknown as { concesion_id?: string }).concesion_id !==
+    context.concesionId
+  ) {
+    throw new ApiError(
+      403,
+      "La caja no pertenece a tu concesión",
+      true,
+      "FORBIDDEN",
+    );
+  }
+
   const resumenFilters: OperationalListFilters = {
     ...filters,
+    sucursalId,
     idUser: filters.idUser ?? context.idUser,
   };
   const resumen = await buildCorteResumen(resumenFilters);
@@ -1281,11 +1310,11 @@ export const cerrarCorte = async (
   return createCorte(
     {
       concesionId: context.concesionId,
-      sucursalId: context.sucursalId ?? null,
+      sucursalId,
       idUser: context.idUser,
       ventaId: null,
-      cajaId: filters.cajaId ?? null,
-      cajaNombre: resumen.cajaNombre,
+      cajaId: filters.cajaId,
+      cajaNombre: resumen.cajaNombre ?? String(caja.nombre ?? caja.id),
     },
     {
       fecha: todayIsoDate(),

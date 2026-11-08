@@ -1,11 +1,4 @@
 import { Request } from "express";
-import { firestorePos } from "../config/firebase";
-import { COLLECTIONS } from "../config/firestore.constants";
-import {
-  buildJornadaId,
-  ramaFromInventario,
-  resolveCajaActivaParaVendedor,
-} from "../services/asignacion-caja.service";
 import {
   getUserConcessionId,
   getUserSucursalId,
@@ -23,8 +16,6 @@ export type OperationalListFilters = {
   inventarioId?: string;
   jornadaId?: string;
 };
-
-const inventariosCol = () => firestorePos.collection(COLLECTIONS.INVENTARIOS);
 
 /** Deriva filtros de listado según rol del usuario autenticado (sync, legacy). */
 export const getOperationalListFilters = (req: Request): OperationalListFilters => {
@@ -48,14 +39,13 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
   if (!concesionId) return { concesionId: "__none__" };
 
   if (isVendedor(user)) {
-    const queryCajaId = req.query.cajaId as string | undefined;
+    const cajaId = (req.query.cajaId as string | undefined)?.trim() || undefined;
     return {
       concesionId,
       sucursalId: getUserSucursalId(user),
-      cajaId:
-        queryCajaId?.trim() ||
-        (user.cajaId as string | undefined) ||
-        undefined,
+      cajaId,
+      // Sin caja indicada solo ve sus propias operaciones, no toda la sucursal.
+      idUser: cajaId ? undefined : (user.uid as string | undefined),
       inventarioId: req.query.inventarioId as string | undefined,
       jornadaId,
     };
@@ -84,48 +74,7 @@ export const getOperationalListFilters = (req: Request): OperationalListFilters 
   return { concesionId, jornadaId };
 };
 
-/** Resuelve caja activa por jornada para vendedores al listar ventas. */
+/** Conserva la firma que usan los controladores; ya no consulta la caja del usuario. */
 export const getOperationalListFiltersAsync = async (
   req: Request,
-): Promise<OperationalListFilters> => {
-  const base = getOperationalListFilters(req);
-  const user = req.user;
-  if (!user || !isVendedor(user)) return base;
-
-  const sucursalId = base.sucursalId;
-  const inventarioId = base.inventarioId;
-  const queryCajaId = (req.query.cajaId as string | undefined)?.trim() || undefined;
-  const fallbackCajaId = (user.cajaId as string | null | undefined) ?? null;
-
-  if (queryCajaId) {
-    return { ...base, cajaId: queryCajaId };
-  }
-
-  if (!sucursalId || !inventarioId) {
-    return { ...base, cajaId: base.cajaId ?? fallbackCajaId ?? undefined };
-  }
-
-  const invDoc = await inventariosCol().doc(inventarioId).get();
-  if (!invDoc.exists) {
-    return { ...base, cajaId: base.cajaId ?? fallbackCajaId ?? undefined };
-  }
-
-  const inv = invDoc.data() ?? {};
-  const jornadaId = buildJornadaId(
-    String(inv.jornada_fecha ?? ""),
-    Number(inv.jornada_numero ?? 0),
-    ramaFromInventario(inv, inventarioId),
-  );
-
-  const resolved = await resolveCajaActivaParaVendedor({
-    vendedorUid: user.uid as string,
-    jornadaId,
-    sucursalId,
-    fallbackCajaId,
-  });
-
-  return {
-    ...base,
-    cajaId: resolved?.cajaId ?? base.cajaId ?? fallbackCajaId ?? undefined,
-  };
-};
+): Promise<OperationalListFilters> => getOperationalListFilters(req);

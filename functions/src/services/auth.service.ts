@@ -8,7 +8,6 @@ import {
 } from "../config/app.firebase";
 import { firestorePos } from "../config/firebase";
 import { COLLECTIONS } from "../config/firestore.constants";
-import { UserRole } from "../models";
 import { ApiError } from "../utils/api-error";
 import { isCinepolisCashierEmail } from "../config/cinepolis.constants";
 import {
@@ -19,7 +18,6 @@ import {
   toInternalRole,
 } from "../utils/concesion-roles";
 import { getConcessionNombre } from "./concession.service";
-import * as sucursalService from "./sucursal.service";
 
 const usuariosCol = () => firestoreApp.collection(USUARIOS_APP_COLLECTION);
 const legacyUsersCol = () => firestorePos.collection(COLLECTIONS.USERS);
@@ -315,55 +313,6 @@ export const withConcesionNombre = async <
   return { ...usuario, concesionNombre };
 };
 
-const CAJA_INACTIVA_MESSAGE =
-  "Caja inactiva. Contacta al administrador.";
-const CAJA_NO_ASIGNADA_MESSAGE =
-  "No tienes una caja asignada. Contacta al administrador.";
-
-/**
- * Bloquea login/sesión POS si el vendedor no tiene caja asignada en su perfil
- * o si la caja está desactivada. Fuente de verdad: `cajaId` + `sucursalId` del
- * perfil (usuariosApp / users legado). Los ADMIN no requieren caja.
- */
-export const assertCajaActivaForPosLogin = async (
-  profile: UsuariosAppProfile,
-  loginEmail?: string,
-) => {
-  if (
-    isCinepolisCashierEmail(profile.email) ||
-    isCinepolisCashierEmail(loginEmail)
-  ) {
-    return;
-  }
-  if (toInternalRole(profile.rol) !== UserRole.VENDEDOR) return;
-
-  const sucursalId = profile.sucursalId?.trim();
-  const cajaId = profile.cajaId?.trim();
-  if (!sucursalId || !cajaId) {
-    throw new ApiError(
-      403,
-      CAJA_NO_ASIGNADA_MESSAGE,
-      true,
-      "CAJA_NO_ASIGNADA",
-    );
-  }
-
-  try {
-    const caja = await sucursalService.getCajaById(sucursalId, cajaId);
-    if (caja.activo === false) {
-      throw new ApiError(403, CAJA_INACTIVA_MESSAGE, true, "CAJA_INACTIVA");
-    }
-  } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.code === "NOT_FOUND") {
-        throw new ApiError(403, CAJA_INACTIVA_MESSAGE, true, "CAJA_INACTIVA");
-      }
-      throw error;
-    }
-    throw error;
-  }
-};
-
 export const assertPosAccess = (profile: UsuariosAppProfile | null) => {
   if (!profile) {
     throw new ApiError(
@@ -449,7 +398,6 @@ export const loginWithPassword = async (email: string, password: string) => {
   }
 
   const profile = await resolvePosProfile(uid, resolvedEmail);
-  await assertCajaActivaForPosLogin(profile, resolvedEmail);
 
   // Sincronizar claims (admin siempre false para concesiones)
   try {
@@ -469,6 +417,5 @@ export const loginWithPassword = async (email: string, password: string) => {
 export const resolveSessionFromToken = async (token: string) => {
   const decoded = verifyPosJwt(token);
   const profile = await resolvePosProfile(decoded.uid, decoded.email);
-  await assertCajaActivaForPosLogin(profile, decoded.email);
   return toPosUsuario(profile);
 };

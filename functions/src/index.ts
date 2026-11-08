@@ -27,6 +27,8 @@ const vipTrackingSecret = defineSecret("VIP_TRACKING_SECRET");
 const brevoApiKey = defineSecret("BREVO_API_KEY");
 const brevoSenderEmail = defineSecret("BREVO_SENDER_EMAIL");
 const brevoSenderName = defineSecret("BREVO_SENDER_NAME");
+/** Firma los tokens de las PDAs. Debe ser distinto de JWT_SECRET. */
+const pdaJwtSecret = defineSecret("PDA_JWT_SECRET");
 
 /**
  * Cloud Function HTTPS Gen2.
@@ -50,6 +52,7 @@ export const apiV2 = onRequest(
       brevoApiKey,
       brevoSenderEmail,
       brevoSenderName,
+      pdaJwtSecret,
     ],
   },
   (req, res) => {
